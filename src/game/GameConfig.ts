@@ -884,6 +884,36 @@ export const ITEMS: Record<string, ItemDefinition> = {
     price: 320,
     stats: { mov: 1, jmp: 1 },
     description: 'Lightweight winged greaves enhancing tactical mobility.'
+  },
+  healing_draught: {
+    id: 'healing_draught',
+    name: 'Dawn Draught',
+    type: 'consumable',
+    slot: 'consumable',
+    price: 75,
+    stats: {},
+    consumableEffect: { targetType: 'ally', range: 2, aoeRadius: 0, healHp: 85, cureStatuses: true },
+    description: 'Restores 85 HP and cleanses poison/acid/slow in battle.'
+  },
+  aether_tonic: {
+    id: 'aether_tonic',
+    name: 'Aether Tonic',
+    type: 'consumable',
+    slot: 'consumable',
+    price: 90,
+    stats: {},
+    consumableEffect: { targetType: 'ally', range: 2, aoeRadius: 0, healMp: 35 },
+    description: 'Restores 35 MP to an adjacent or nearby ally in battle.'
+  },
+  ember_bomb: {
+    id: 'ember_bomb',
+    name: 'Ember Flask',
+    type: 'consumable',
+    slot: 'consumable',
+    price: 120,
+    stats: {},
+    consumableEffect: { targetType: 'enemy', range: 3, aoeRadius: 1, damage: 48 },
+    description: 'Hurls an alchemical charge dealing 48 fire damage in a 1-tile blast.'
   }
 };
 
@@ -900,7 +930,8 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
     playerSpawns: [
       { x: 1, z: 2 },
       { x: 1, z: 4 },
-      { x: 2, z: 3 }
+      { x: 2, z: 3 },
+      { x: 2, z: 5 }
     ],
     obstacles: [
       { x: 4, z: 2, height: 2 },
@@ -912,6 +943,7 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
       { jobId: 'tirador', level: 1, x: 8, z: 6, facing: 'west', name: 'Outlaw Arbalist', aiRole: 'ranged' }
     ],
     objectiveType: 'defeat_all',
+    parTurns: 10,
     victoryCondition: 'Defeat all enemy raiders',
     defeatCondition: 'All allied units fall in battle',
     rewardExp: 120,
@@ -930,7 +962,8 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
     playerSpawns: [
       { x: 1, z: 2 },
       { x: 1, z: 5 },
-      { x: 2, z: 4 }
+      { x: 2, z: 4 },
+      { x: 2, z: 6 }
     ],
     obstacles: [
       { x: 4, z: 4, height: 2 },
@@ -944,6 +977,7 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
       { jobId: 'devoto', level: 2, x: 9, z: 5, facing: 'west', name: 'Corrupt Cleric', aiRole: 'healer' }
     ],
     objectiveType: 'defeat_all',
+    parTurns: 12,
     victoryCondition: 'Defeat all Eclipse cultists',
     defeatCondition: 'All allied units fall in battle',
     rewardExp: 220,
@@ -962,7 +996,8 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
     playerSpawns: [
       { x: 1, z: 3 },
       { x: 1, z: 6 },
-      { x: 2, z: 5 }
+      { x: 2, z: 5 },
+      { x: 2, z: 7 }
     ],
     obstacles: [
       { x: 5, z: 3, height: 3 },
@@ -977,6 +1012,7 @@ export const CAMPAIGN_MISSIONS: MissionData[] = [
       { jobId: 'devoto', level: 3, x: 10, z: 4, facing: 'west', name: 'Void Acolyte', aiRole: 'healer' }
     ],
     objectiveType: 'defeat_leader',
+    parTurns: 14,
     victoryCondition: 'Defeat Malakor, the Eclipse Invoker',
     defeatCondition: 'All allied units fall in battle',
     rewardExp: 450,

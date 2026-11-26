@@ -55,10 +55,12 @@ export function pickWesnothBaseVariant(tile: WesnothHexTile): string {
   const code = tile.terrain.baseCode;
 
   if (code === 'Gg') return GRASS_GREEN_VARIANTS[h % GRASS_GREEN_VARIANTS.length];
-  if (code === 'Gs') return GRASS_SEMI_VARIANTS[h % GRASS_SEMI_VARIANTS.length];
+  if (code === 'Gs' || code === 'Aa') return GRASS_SEMI_VARIANTS[h % GRASS_SEMI_VARIANTS.length];
   if (code === 'Rr') return ROAD_VARIANTS[h % ROAD_VARIANTS.length];
-  if (code === 'Ds') return SAND_VARIANTS[h % SAND_VARIANTS.length];
-  if (code === 'Hh' || code === 'Mm') return HILLS_VARIANTS[h % HILLS_VARIANTS.length];
+  if (code === 'Ds' || code === 'Dd') return SAND_VARIANTS[h % SAND_VARIANTS.length];
+  if (code === 'Hh' || code === 'Mm' || code === 'Hd' || code === 'Ha' || code === 'Ms') {
+    return HILLS_VARIANTS[h % HILLS_VARIANTS.length];
+  }
   if (code === 'Ch') return 'castle_cobbles';
   return tile.terrain.baseAsset;
 }
@@ -92,12 +94,18 @@ function isLandBase(code: string): boolean {
     code === 'Hh' ||
     code === 'Mm' ||
     code === 'Ch' ||
-    code === 'Kh'
+    code === 'Kh' ||
+    code === 'Aa' ||
+    code === 'Ha' ||
+    code === 'Ms' ||
+    code === 'Dd' ||
+    code === 'Hd' ||
+    code === 'Rd'
   );
 }
 
 function isWaterBase(code: string): boolean {
-  return code === 'Ww' || code === 'Wo' || code === 'Wwf';
+  return code === 'Ww' || code === 'Wo' || code === 'Wwf' || code === 'Qlf';
 }
 
 /**
@@ -141,8 +149,11 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
       push(10, 'water_ford', dir);
     }
 
-    // 2. Beach sand spills softly onto water & flat grass/roads (-510 / -319)
-    if (nbCode === 'Ds' && (isWaterBase(selfCode) || selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re')) {
+    // 2. Beach/Dune sand spills softly onto water & flat grass/roads (-510 / -319)
+    if (
+      (nbCode === 'Ds' || nbCode === 'Dd') &&
+      (isWaterBase(selfCode) || selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re')
+    ) {
       push(20, 'sand_beach', dir);
     }
 
@@ -152,17 +163,20 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
     }
 
     // 4. Swamp mire transitions onto adjacent flat/water (-230)
-    if (nbCode === 'Ss' && (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re' || selfCode === 'Ds' || isWaterBase(selfCode))) {
+    if (
+      nbCode === 'Ss' &&
+      (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re' || selfCode === 'Ds' || isWaterBase(selfCode))
+    ) {
       push(40, 'swamp_water', dir);
     }
 
-    // 5. Dirt trail blends onto grass & sand (-379)
-    if (nbCode === 'Re' && (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Ds' || selfCode === 'Ss')) {
+    // 5. Dirt/Ashen trail blends onto grass & sand (-379)
+    if ((nbCode === 'Re' || nbCode === 'Rd') && (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Ds' || selfCode === 'Dd' || selfCode === 'Ss')) {
       push(50, 'flat_dirt', dir);
     }
 
     // 6. Cobble road & castle cobbles blend onto dirt/sand/grass/water-edge (-300)
-    if ((nbCode === 'Rr' || nbCode === 'Ch' || nbCode === 'Kh') && (selfCode === 'Re' || selfCode === 'Ds')) {
+    if ((nbCode === 'Rr' || nbCode === 'Ch' || nbCode === 'Kh') && (selfCode === 'Re' || selfCode === 'Ds' || selfCode === 'Dd' || selfCode === 'Rd')) {
       push(60, 'flat_road', dir);
     }
 
@@ -180,10 +194,13 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
     }
 
     // 9. Hills & mountains spill slopes onto adjacent flat & water tiles (-180 / -482)
-    if ((nbCode === 'Hh' || nbCode === 'Mm') && (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re' || selfCode === 'Ds' || selfCode === 'Ss')) {
+    if (
+      (nbCode === 'Hh' || nbCode === 'Mm' || nbCode === 'Hd' || nbCode === 'Ha' || nbCode === 'Ms') &&
+      (selfCode === 'Gg' || selfCode === 'Gs' || selfCode === 'Rr' || selfCode === 'Re' || selfCode === 'Ds' || selfCode === 'Dd' || selfCode === 'Aa' || selfCode === 'Rd' || selfCode === 'Ss')
+    ) {
       push(90, 'hills_regular', dir);
     }
-    if ((nbCode === 'Hh' || nbCode === 'Mm') && isWaterBase(selfCode)) {
+    if ((nbCode === 'Hh' || nbCode === 'Mm' || nbCode === 'Hd' || nbCode === 'Ha' || nbCode === 'Ms') && isWaterBase(selfCode)) {
       push(92, 'hills_water', dir);
     }
   }

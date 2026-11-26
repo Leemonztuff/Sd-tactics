@@ -28,20 +28,26 @@ export function createStarterSaveData(): SaveData {
     day: 1,
     currentMissionIndex: 0,
     roster: [valerius, lyra, kaelen],
+    activeSquadIds: ['hero_1', 'hero_2', 'hero_3'],
     inventory: [
       { itemId: 'steel_rapier', count: 1 },
       { itemId: 'composite_bow', count: 1 },
       { itemId: 'leather_armor', count: 1 },
-      { itemId: 'ring_of_speed', count: 1 }
+      { itemId: 'ring_of_speed', count: 1 },
+      { itemId: 'healing_draught', count: 2 },
+      { itemId: 'aether_tonic', count: 1 },
+      { itemId: 'ember_bomb', count: 1 }
     ],
     completedMissions: [],
+    missionStars: {},
     overworld: {
       heroX: 2,
       heroY: 3,
       day: 1,
       movetype: 'smallfoot',
       visitedVillages: [],
-      clearedEncounters: []
+      clearedEncounters: [],
+      collectedPois: []
     }
   };
 }
@@ -75,6 +81,15 @@ export function validateSaveData(raw: unknown): SaveData | null {
     if (!unit.stats || typeof unit.stats.maxHp !== 'number') return null;
   }
 
+  if (
+    data.qualityTier !== undefined &&
+    data.qualityTier !== 'eco' &&
+    data.qualityTier !== 'balanced' &&
+    data.qualityTier !== 'high'
+  ) {
+    return null;
+  }
+
   return data as SaveData;
 }
 
@@ -97,8 +112,10 @@ export function serializeSaveData(data: SaveData): string {
     day: data.day ?? 1,
     currentMissionIndex: data.currentMissionIndex ?? 0,
     roster: cleanRoster,
+    activeSquadIds: data.activeSquadIds?.filter(id => cleanRoster.some(h => h.id === id)) ?? cleanRoster.slice(0, 4).map(h => h.id),
     inventory: data.inventory.filter(i => i.count > 0),
     completedMissions: [...data.completedMissions],
+    missionStars: data.missionStars ? { ...data.missionStars } : {},
     overworld: data.overworld
       ? {
           heroX: data.overworld.heroX,
@@ -106,9 +123,13 @@ export function serializeSaveData(data: SaveData): string {
           day: data.overworld.day,
           movetype: data.overworld.movetype,
           visitedVillages: [...data.overworld.visitedVillages],
-          clearedEncounters: [...data.overworld.clearedEncounters]
+          clearedEncounters: [...data.overworld.clearedEncounters],
+          collectedPois: [...(data.overworld.collectedPois ?? [])],
+          activeWorldEvents: data.overworld.activeWorldEvents ? data.overworld.activeWorldEvents.map(e => ({ ...e })) : undefined,
+          worldEventCooldown: data.overworld.worldEventCooldown
         }
-      : undefined
+      : undefined,
+    qualityTier: data.qualityTier
   };
 
   return JSON.stringify(payload);

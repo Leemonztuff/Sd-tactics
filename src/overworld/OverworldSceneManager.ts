@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   HEX_RADIUS,
   HEX_SQRT3,
@@ -16,9 +15,19 @@ import {
   getDirectionalNeighbors
 } from './WesnothAutoTiler';
 import { ActivePatrolState } from './OverworldManager';
+import { ActiveWorldEventNode } from './OverworldEvents';
+import { OverworldWeatherSystem } from './OverworldWeatherSystem';
+import { OVERWORLD_VILLAGES, OverworldPoiSpec } from './WesnothOverworldMap';
 import { WesnothTextureCache } from './WesnothAssetLoader';
 import { WesnothTileAtlas, TILE_PX } from './WesnothTileAtlas';
 import { WesnothMovetypeId } from './WesnothTerrain';
+import {
+  BRAWL_PALETTE,
+  QUALITY_PRESETS,
+  QualityPreset,
+  attachWebGLContextGuards,
+  probeClientDeviceTier
+} from '../rendering/BrawlStyleSystem';
 
 const _vec3A = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
@@ -40,6 +49,22 @@ interface PatrolVisualEntry {
   sprite: THREE.Mesh;
   ring: THREE.Mesh;
   targetPos: THREE.Vector3;
+  phase: number;
+}
+
+interface PoiVisualEntry {
+  group: THREE.Group;
+  beacon: THREE.Mesh;
+  ring: THREE.Mesh;
+  baseY: number;
+  phase: number;
+}
+
+interface WorldEventVisualEntry {
+  group: THREE.Group;
+  prop: THREE.Object3D;
+  ring: THREE.Mesh;
+  baseY: number;
   phase: number;
 }
 
@@ -195,6 +220,8 @@ export class OverworldSceneManager {
   private pickMeshes: THREE.Mesh[] = [];
   private billboards: BillboardSpriteEntry[] = [];
   private patrolVisuals = new Map<string, PatrolVisualEntry>();
+  private poiVisuals = new Map<string, PoiVisualEntry>();
+  private worldEventVisuals = new Map<string, WorldEventVisualEntry>();
 
   private heroGroup: THREE.Group;
   private heroSprite: THREE.Mesh;
@@ -207,6 +234,7 @@ export class OverworldSceneManager {
   private pathInstanced: THREE.InstancedMesh | null = null;
   private hoverHexRing: THREE.Mesh;
   private waterOverlayMesh: THREE.Mesh | null = null;
+  private weatherSystem: OverworldWeatherSystem | null = null;
 
   private cameraTarget = new THREE.Vector3(10, 0.4, 10);
   private desiredTarget = new THREE.Vector3(10, 0.4, 10);
@@ -232,42 +260,49 @@ export class OverworldSceneManager {
   private lastFrameMs = performance.now();
   private boundListeners: Array<{ target: EventTarget; type: string; fn: EventListenerOrEventListenerObject }> = [];
   private mapBounds = { maxX: 30, maxZ: 25 };
+  private sunLight: THREE.DirectionalLight | null = null;
+  private qualityPreset: QualityPreset;
+  private detachContextGuards: (() => void) | null = null;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, initialPreset?: QualityPreset) {
     this.container = container;
     this.isSoftwareGl = this.detectSoftwareGl();
+    this.qualityPreset = initialPreset ?? QUALITY_PRESETS[probeClientDeviceTier(this.isSoftwareGl)];
     this.texCache = new WesnothTextureCache(() => {
       if (!this.disposed) {
         this.renderer.render(this.scene, this.camera);
       }
     });
 
+    const pal = BRAWL_PALETTE.overworld;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x101c2e);
-    this.scene.fog = new THREE.FogExp2(0x101c2e, 0.021);
+    this.scene.background = new THREE.Color(pal.backgroundHex);
+    this.scene.fog = new THREE.FogExp2(pal.backgroundHex, pal.fogDensity);
 
     const w = Math.max(1, container.clientWidth);
     const h = Math.max(1, container.clientHeight);
     this.camera = new THREE.PerspectiveCamera(42, w / h, 0.5, 140);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl,
+      antialias: this.qualityPreset.antialias && !this.isSoftwareGl,
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, this.qualityPreset.maxPixelRatio)
+    );
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    this.renderer.toneMappingExposure = pal.toneMappingExposure;
+    this.renderer.shadowMap.enabled = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.touchAction = 'none';
     container.appendChild(this.renderer.domElement);
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
+    this.detachContextGuards = attachWebGLContextGuards(this.renderer.domElement);
 
+    // Intentionally omit RoomEnvironment IBL on the Overworld so pre-lit Wesnoth terrain
+    // and world sprites retain rich, saturated colors instead of washing out to white.
     this.setupLighting();
     this.scene.add(this.worldGroup);
 
@@ -313,16 +348,16 @@ export class OverworldSceneManager {
     const heroTex = this.texCache.getTexture('hero_marshal');
     const heroPlaneGeo = new THREE.PlaneGeometry(1.18, 1.18);
     heroPlaneGeo.translate(0, 0.56, 0);
-    const heroMat = new THREE.MeshStandardMaterial({
+    const heroMat = new THREE.MeshLambertMaterial({
       map: heroTex,
-      color: 0xffffff,
+      color: BRAWL_PALETTE.overworld.unitSpriteTintHex,
+      emissive: 0x1e293b,
+      emissiveIntensity: 0.18,
       alphaTest: 0.4,
-      roughness: 0.85,
-      metalness: 0.05,
       side: THREE.DoubleSide
     });
     this.heroSprite = new THREE.Mesh(heroPlaneGeo, heroMat);
-    this.heroSprite.castShadow = !this.isSoftwareGl;
+    this.heroSprite.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
 
     this.heroGroup.add(heroShadow, this.heroRing, this.heroSprite);
     this.scene.add(this.heroGroup);
@@ -347,25 +382,47 @@ export class OverworldSceneManager {
   }
 
   private setupLighting() {
-    const hemi = new THREE.HemisphereLight(0x93c5fd, 0x262b38, 0.85);
+    const pal = BRAWL_PALETTE.overworld;
+    const hemi = new THREE.HemisphereLight(pal.hemiSky, pal.hemiGround, pal.hemiIntensity);
     this.scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfff3d6, 1.48);
-    sun.position.set(16, 26, 18);
-    sun.castShadow = !this.isSoftwareGl;
+    const sun = new THREE.DirectionalLight(pal.sunColor, pal.sunIntensity);
+    sun.position.set(22, 24, 18);
+    sun.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near = 2;
-    sun.shadow.camera.far = 70;
-    sun.shadow.camera.left = -22;
-    sun.shadow.camera.right = 22;
-    sun.shadow.camera.top = 22;
-    sun.shadow.camera.bottom = -22;
+    sun.shadow.camera.far = 85;
+    sun.shadow.camera.left = -28;
+    sun.shadow.camera.right = 28;
+    sun.shadow.camera.top = 28;
+    sun.shadow.camera.bottom = -28;
     sun.shadow.bias = -0.0005;
+    this.sunLight = sun;
     this.scene.add(sun);
+    this.scene.add(sun.target);
 
-    const rim = new THREE.DirectionalLight(0x60a5fa, 0.45);
-    rim.position.set(-14, 12, -16);
+    const rim = new THREE.DirectionalLight(pal.rimColor, pal.rimIntensity);
+    rim.position.set(-14, 10, -16);
     this.scene.add(rim);
+  }
+
+  public applyQualityPreset(preset: QualityPreset) {
+    this.qualityPreset = preset;
+    if (this.disposed) return;
+    this.renderer.setPixelRatio(
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, preset.maxPixelRatio)
+    );
+    const shadowsOn = preset.shadowsEnabled && !this.isSoftwareGl;
+    this.renderer.shadowMap.enabled = shadowsOn;
+    if (this.sunLight) {
+      this.sunLight.castShadow = shadowsOn;
+    }
+    if (this.tileAtlas) {
+      this.tileAtlas.texture.anisotropy = this.isSoftwareGl
+        ? 1
+        : Math.min(preset.anisotropyCap, this.renderer.capabilities.getMaxAnisotropy());
+    }
+    this.weatherSystem?.setQualityScale(preset.particleScale);
   }
 
   public buildOverworldScene(map: WesnothMapData) {
@@ -373,11 +430,23 @@ export class OverworldSceneManager {
       this.worldGroup.remove(this.worldGroup.children[0]);
     }
     this.tileAtlas?.dispose();
+    if (this.weatherSystem) {
+      this.scene.remove(this.weatherSystem.group);
+      this.weatherSystem.dispose();
+      this.weatherSystem = null;
+    }
     this.pickMeshes = [];
     this.billboards = [];
 
     const maxWorld = hexToWorld(map.width - 1, map.height - 1);
     this.mapBounds = { maxX: maxWorld.wx, maxZ: maxWorld.wz };
+    if (this.sunLight) {
+      const cx = maxWorld.wx * 0.5;
+      const cz = maxWorld.wz * 0.5;
+      this.sunLight.position.set(cx + 12, 24, cz + 10);
+      this.sunLight.target.position.set(cx, 0, cz);
+      this.sunLight.target.updateMatrixWorld();
+    }
 
     // 1. Auto-tiled Wesnoth Atlas (all transitions composited into 1 crisp pixel-art atlas)
     this.tileAtlas = new WesnothTileAtlas(map, () => {
@@ -386,39 +455,38 @@ export class OverworldSceneManager {
       }
     });
     if (!this.isSoftwareGl) {
-      this.tileAtlas.texture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
+      this.tileAtlas.texture.anisotropy = Math.min(
+        this.qualityPreset.anisotropyCap,
+        this.renderer.capabilities.getMaxAnisotropy()
+      );
     }
 
+    const pal = BRAWL_PALETTE.overworld;
     const { topGeo, sideGeo } = buildMergedHexTerrainGeometries(map, this.tileAtlas);
 
-    const terrainTopMat = new THREE.MeshStandardMaterial({
+    // Calibrated MeshLambertMaterial keeps hex tiles crisp, richly saturated, and fast on low-end GPUs
+    const terrainTopMat = new THREE.MeshLambertMaterial({
       map: this.tileAtlas.texture,
-      color: 0xffffff,
-      roughness: 0.88,
-      metalness: 0.03
+      color: pal.terrainTintHex
     });
     const terrainTopMesh = new THREE.Mesh(topGeo, terrainTopMat);
     terrainTopMesh.receiveShadow = true;
     this.worldGroup.add(terrainTopMesh);
 
-    const terrainSideMat = new THREE.MeshStandardMaterial({
+    const terrainSideMat = new THREE.MeshLambertMaterial({
       vertexColors: true,
-      roughness: 0.92,
-      metalness: 0.04,
       flatShading: true
     });
     const terrainSideMesh = new THREE.Mesh(sideGeo, terrainSideMat);
     terrainSideMesh.receiveShadow = true;
-    terrainSideMesh.castShadow = !this.isSoftwareGl;
+    terrainSideMesh.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
     this.worldGroup.add(terrainSideMesh);
 
-    // 2. Continuous Deep Ocean base matched to Wesnoth deep water extending into horizon fog
+    // 2. Continuous Deep Ocean base matched to Brawl-Tactics deep sea palette
     const seaGeo = new THREE.PlaneGeometry(130, 130);
     seaGeo.rotateX(-Math.PI / 2);
-    const seaMat = new THREE.MeshStandardMaterial({
-      color: 0x224363,
-      roughness: 0.36,
-      metalness: 0.16
+    const seaMat = new THREE.MeshLambertMaterial({
+      color: pal.seaHex
     });
     const seaMesh = new THREE.Mesh(seaGeo, seaMat);
     seaMesh.position.set(maxWorld.wx / 2, 0.01, maxWorld.wz / 2);
@@ -426,9 +494,13 @@ export class OverworldSceneManager {
     this.worldGroup.add(seaMesh);
     this.waterOverlayMesh = seaMesh;
 
+    // Subtle atmospheric fog wisps & biome dust motes
+    this.weatherSystem = new OverworldWeatherSystem(map, this.qualityPreset.particleScale);
+    this.scene.add(this.weatherSystem.group);
+
     // Low coastal reefs far around perimeter
     const rockGeo = new THREE.DodecahedronGeometry(0.55, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x16314c, roughness: 0.88, flatShading: true });
+    const rockMat = new THREE.MeshLambertMaterial({ color: pal.reefHex, flatShading: true });
     const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, 14);
     for (let i = 0; i < 14; i++) {
       const ang = (i / 14) * Math.PI * 2;
@@ -446,16 +518,14 @@ export class OverworldSceneManager {
     pickGeo.rotateX(-Math.PI / 2);
     const pickMat = new THREE.MeshBasicMaterial({ visible: false });
 
-    const overlayMatCache = new Map<string, THREE.MeshStandardMaterial>();
+    const overlayMatCache = new Map<string, THREE.MeshLambertMaterial>();
     const getOverlayMat = (assetKey: string) => {
       const existing = overlayMatCache.get(assetKey);
       if (existing) return existing;
-      const mat = new THREE.MeshStandardMaterial({
+      const mat = new THREE.MeshLambertMaterial({
         map: this.texCache.getTexture(assetKey),
-        color: 0xffffff,
+        color: pal.propSpriteTintHex,
         alphaTest: 0.42,
-        roughness: 0.88,
-        metalness: 0.04,
         side: THREE.DoubleSide
       });
       overlayMatCache.set(assetKey, mat);
@@ -465,27 +535,27 @@ export class OverworldSceneManager {
     const propShadowGeo = new THREE.CircleGeometry(0.36, 10);
     propShadowGeo.rotateX(-Math.PI / 2);
     const propShadowMat = new THREE.MeshBasicMaterial({
-      color: 0x000000,
+      color: 0x050814,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.36,
       depthWrite: false
     });
 
-    const castleWallSegGeo = new THREE.BoxGeometry(HEX_RADIUS * 0.98, 0.2, 0.14);
-    const castleCrestGeo = new THREE.BoxGeometry(0.22, 0.09, 0.16);
-    const castleCornerGeo = new THREE.CylinderGeometry(0.115, 0.125, 0.27, 6);
-    const castleWallMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.82, flatShading: true });
-    const castleTrimMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.78, flatShading: true });
+    const castleWallSegGeo = new THREE.BoxGeometry(HEX_RADIUS * 0.98, 0.2, 0.15);
+    const castleCrestGeo = new THREE.BoxGeometry(0.22, 0.09, 0.17);
+    const castleCornerGeo = new THREE.CylinderGeometry(0.12, 0.135, 0.28, 6);
+    const castleWallMat = new THREE.MeshLambertMaterial({ color: pal.castleWallHex, flatShading: true });
+    const castleTrimMat = new THREE.MeshLambertMaterial({ color: pal.castleTrimHex, flatShading: true });
 
-    const poleGeo = new THREE.CylinderGeometry(0.024, 0.03, 0.84, 6);
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.55, metalness: 0.45 });
+    const poleGeo = new THREE.CylinderGeometry(0.026, 0.032, 0.84, 6);
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0xcbd5e1 });
     const pennantGeo = new THREE.BoxGeometry(0.34, 0.16, 0.03);
 
     const bridgeDeckGeo = new THREE.BoxGeometry(HEX_RADIUS * 1.4, 0.14, HEX_RADIUS * 0.72);
-    const bridgeDeckMat = new THREE.MeshStandardMaterial({
-      map: this.texCache.getTexture('bridge_stone'),
-      color: 0xffffff,
-      roughness: 0.8
+    const bridgeRailGeo = new THREE.BoxGeometry(HEX_RADIUS * 1.42, 0.08, 0.09);
+    const bridgeDeckMat = new THREE.MeshLambertMaterial({
+      color: 0x948c7e,
+      flatShading: true
     });
 
     const spriteGeo = new THREE.PlaneGeometry(1.25, 1.25);
@@ -551,14 +621,41 @@ export class OverworldSceneManager {
             pole.position.set(wx - 0.54, h + 0.42, wz - 0.42);
             this.worldGroup.add(pole);
 
-            const bannerColor = tile.startingPosition === 1 ? 0x2563eb : 0xdc2626;
+            const bannerColor =
+              tile.startingPosition === 1
+                ? 0x2563eb
+                : tile.startingPosition === 4
+                  ? 0x38bdf8
+                  : tile.startingPosition === 5
+                    ? 0xf59e0b
+                    : 0xdc2626;
             const pennant = new THREE.Mesh(
               pennantGeo,
-              new THREE.MeshStandardMaterial({ color: bannerColor, roughness: 0.55, flatShading: true })
+              new THREE.MeshLambertMaterial({ color: bannerColor, flatShading: true })
             );
             pennant.position.set(wx - 0.37, h + 0.74, wz - 0.42);
             this.worldGroup.add(pennant);
           }
+        }
+
+        // Major City & Harbor Town 3D Landmarks
+        const citySpec = OVERWORLD_VILLAGES.find(v => v.x === x && v.y === y);
+        if (citySpec && (citySpec.cityTier === 'city' || citySpec.cityTier === 'port')) {
+          const cityPole = new THREE.Mesh(poleGeo, poleMat);
+          cityPole.position.set(wx + 0.44, h + 0.36, wz - 0.34);
+          cityPole.scale.set(0.85, 0.85, 0.85);
+          this.worldGroup.add(cityPole);
+
+          const cityPennant = new THREE.Mesh(
+            pennantGeo,
+            new THREE.MeshLambertMaterial({
+              color: citySpec.cityTier === 'port' ? 0x0ea5e9 : 0xf59e0b,
+              flatShading: true
+            })
+          );
+          cityPennant.position.set(wx + 0.57, h + 0.64, wz - 0.34);
+          cityPennant.scale.set(0.82, 0.82, 0.82);
+          this.worldGroup.add(cityPennant);
         }
 
         // Low-poly 3D Stone Bridge Deck
@@ -566,6 +663,12 @@ export class OverworldSceneManager {
           const deck = new THREE.Mesh(bridgeDeckGeo, bridgeDeckMat);
           deck.position.set(wx, h + 0.04, wz);
           this.worldGroup.add(deck);
+          const northRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
+          northRail.position.set(wx, h + 0.12, wz - HEX_RADIUS * 0.31);
+          this.worldGroup.add(northRail);
+          const southRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
+          southRail.position.set(wx, h + 0.12, wz + HEX_RADIUS * 0.31);
+          this.worldGroup.add(southRail);
         }
 
         // Upright Wesnoth Pixel-Art Overlays (Forests, Villages, Mountains)
@@ -685,7 +788,7 @@ export class OverworldSceneManager {
     this.desiredTarget.set(wx, heroElev + 0.4, wz);
 
     const heroAsset = movetype === 'woodland' ? 'hero_lieutenant' : 'hero_marshal';
-    const mat = this.heroSprite.material as THREE.MeshStandardMaterial;
+    const mat = this.heroSprite.material as THREE.MeshLambertMaterial;
     const targetTex = this.texCache.getTexture(heroAsset);
     if (mat.map !== targetTex) {
       mat.map = targetTex;
@@ -704,7 +807,7 @@ export class OverworldSceneManager {
         const grp = new THREE.Group();
         const sh = new THREE.Mesh(
           new THREE.CircleGeometry(0.4, 14).rotateX(-Math.PI / 2),
-          new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x050814, transparent: true, opacity: 0.44, depthWrite: false })
         );
         sh.position.y = 0.02;
 
@@ -713,7 +816,7 @@ export class OverworldSceneManager {
           new THREE.MeshBasicMaterial({
             color: p.isBoss ? 0xf59e0b : 0xef4444,
             transparent: true,
-            opacity: 0.9,
+            opacity: 0.92,
             side: THREE.DoubleSide,
             depthWrite: false
           })
@@ -722,15 +825,16 @@ export class OverworldSceneManager {
 
         const spGeo = new THREE.PlaneGeometry(p.isBoss ? 1.38 : 1.16, p.isBoss ? 1.38 : 1.16);
         spGeo.translate(0, p.isBoss ? 0.66 : 0.56, 0);
-        const spMat = new THREE.MeshStandardMaterial({
+        const spMat = new THREE.MeshLambertMaterial({
           map: this.texCache.getTexture(p.spriteAsset),
-          color: 0xffffff,
+          color: BRAWL_PALETTE.overworld.unitSpriteTintHex,
+          emissive: 0x1e293b,
+          emissiveIntensity: 0.18,
           alphaTest: 0.4,
-          roughness: 0.85,
           side: THREE.DoubleSide
         });
         const sprite = new THREE.Mesh(spGeo, spMat);
-        sprite.castShadow = !this.isSoftwareGl;
+        sprite.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
 
         grp.add(sh, ring, sprite);
         grp.position.set(pw.wx, pElev + 0.02, pw.wz);
@@ -752,6 +856,173 @@ export class OverworldSceneManager {
       if (!seen.has(id)) {
         this.scene.remove(vis.group);
         this.patrolVisuals.delete(id);
+      }
+    }
+  }
+
+  public syncPois(pois: OverworldPoiSpec[], map: WesnothMapData) {
+    const seen = new Set<string>();
+    for (const poi of pois) {
+      seen.add(poi.id);
+      if (this.poiVisuals.has(poi.id)) continue;
+
+      const tile = map.tiles[poi.y]?.[poi.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(poi.x, poi.y);
+
+      const grp = new THREE.Group();
+      const ringColor =
+        poi.kind === 'recruit' ? 0x34d399 : poi.kind === 'shrine' ? 0x38bdf8 : 0xfacc15;
+      const beaconColor =
+        poi.kind === 'recruit' ? 0x10b981 : poi.kind === 'shrine' ? 0x0ea5e9 : 0xf59e0b;
+
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.5, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: ringColor,
+          transparent: true,
+          opacity: 0.9,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.032;
+
+      const beaconGeo =
+        poi.kind === 'chest'
+          ? new THREE.BoxGeometry(0.32, 0.24, 0.24)
+          : new THREE.OctahedronGeometry(0.22, 0);
+      const beaconMat = new THREE.MeshLambertMaterial({
+        color: beaconColor,
+        emissive: beaconColor,
+        emissiveIntensity: 0.35,
+        flatShading: true
+      });
+      const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+      const baseY = poi.kind === 'recruit' ? 0.95 : 0.45;
+      beacon.position.y = baseY;
+      beacon.castShadow = !this.isSoftwareGl;
+
+      grp.add(ring, beacon);
+      grp.position.set(wx, h + 0.02, wz);
+      this.scene.add(grp);
+
+      this.poiVisuals.set(poi.id, {
+        group: grp,
+        beacon,
+        ring,
+        baseY,
+        phase: poi.x * 0.6 + poi.y * 0.9
+      });
+    }
+
+    for (const [id, vis] of this.poiVisuals.entries()) {
+      if (!seen.has(id)) {
+        this.scene.remove(vis.group);
+        this.poiVisuals.delete(id);
+      }
+    }
+  }
+
+  public syncWorldEvents(events: ActiveWorldEventNode[], map: WesnothMapData) {
+    const seen = new Set<string>();
+    for (const ev of events) {
+      seen.add(ev.id);
+      if (this.worldEventVisuals.has(ev.id)) continue;
+
+      const tile = map.tiles[ev.y]?.[ev.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(ev.x, ev.y);
+
+      const grp = new THREE.Group();
+      const isMerchant = ev.category === 'merchant';
+      const ringColor = isMerchant ? 0xf59e0b : 0x2dd4bf;
+
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.45, 0.54, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: ringColor,
+          transparent: true,
+          opacity: 0.92,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.032;
+
+      const propGroup = new THREE.Group();
+      if (isMerchant) {
+        // Composite Traveling Merchant Caravan: wooden bed + 4 wheels + crimson canopy + brass lantern
+        const woodMat = new THREE.MeshLambertMaterial({ color: 0x7c4a26, flatShading: true });
+        const canopyMat = new THREE.MeshLambertMaterial({ color: 0xb91c1c, flatShading: true });
+        const trimMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b, flatShading: true });
+        const wheelMat = new THREE.MeshLambertMaterial({ color: 0x3b2618, flatShading: true });
+
+        const bed = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.3), woodMat);
+        bed.position.y = 0.14;
+        const canopy = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.44, 6).rotateZ(Math.PI / 2), canopyMat);
+        canopy.position.y = 0.3;
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.05, 0.32), trimMat);
+        stripe.position.y = 0.22;
+        const lantern = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.08, 0),
+          new THREE.MeshLambertMaterial({ color: 0xfde047, emissive: 0xf59e0b, emissiveIntensity: 0.55 })
+        );
+        lantern.position.set(0.25, 0.28, 0);
+
+        const wheelGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.05, 8).rotateX(Math.PI / 2);
+        [
+          [-0.14, 0.09, 0.17],
+          [0.14, 0.09, 0.17],
+          [-0.14, 0.09, -0.17],
+          [0.14, 0.09, -0.17]
+        ].forEach(([lx, ly, lz]) => {
+          const w = new THREE.Mesh(wheelGeo, wheelMat);
+          w.position.set(lx, ly, lz);
+          propGroup.add(w);
+        });
+
+        propGroup.add(bed, canopy, stripe, lantern);
+      } else {
+        // Composite Supply Cache / Relic Crate: iron-banded chest + side crate + floating teal flare diamond
+        const crateMat = new THREE.MeshLambertMaterial({ color: 0x85532b, flatShading: true });
+        const ironMat = new THREE.MeshLambertMaterial({ color: 0x475569, flatShading: true });
+        const flareMat = new THREE.MeshLambertMaterial({
+          color: 0x2dd4bf,
+          emissive: 0x14b8a6,
+          emissiveIntensity: 0.45,
+          flatShading: true
+        });
+
+        const chest = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.22, 0.24), crateMat);
+        chest.position.y = 0.12;
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.06, 0.26), ironMat);
+        band.position.y = 0.14;
+        const sidePack = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.16), crateMat);
+        sidePack.position.set(-0.22, 0.08, 0.1);
+        const flare = new THREE.Mesh(new THREE.OctahedronGeometry(0.13, 0), flareMat);
+        flare.position.set(0, 0.44, 0);
+
+        propGroup.add(chest, band, sidePack, flare);
+      }
+
+      grp.add(ring, propGroup);
+      grp.position.set(wx, h + 0.02, wz);
+      this.scene.add(grp);
+
+      this.worldEventVisuals.set(ev.id, {
+        group: grp,
+        prop: propGroup,
+        ring,
+        baseY: 0,
+        phase: ev.x * 0.7 + ev.y * 0.5
+      });
+    }
+
+    for (const [id, vis] of this.worldEventVisuals.entries()) {
+      if (!seen.has(id)) {
+        this.scene.remove(vis.group);
+        this.worldEventVisuals.delete(id);
       }
     }
   }
@@ -825,7 +1096,7 @@ export class OverworldSceneManager {
   }
 
   public adjustZoom(delta: number) {
-    this.desiredDist = THREE.MathUtils.clamp(this.desiredDist + delta, 7.5, 22.0);
+    this.desiredDist = THREE.MathUtils.clamp(this.desiredDist + delta, 7.5, 27.0);
   }
 
   public focusOnHex(x: number, y: number, map: WesnothMapData) {
@@ -833,6 +1104,10 @@ export class OverworldSceneManager {
     const h = tile ? tile.terrain.elevation : 0.26;
     const { wx, wz } = hexToWorld(x, y);
     this.desiredTarget.set(wx, h + 0.4, wz);
+    if (this.isSoftwareGl) {
+      this.cameraTarget.copy(this.desiredTarget);
+      this.updateCamera(1);
+    }
   }
 
   public resize(w: number, h: number) {
@@ -978,9 +1253,22 @@ export class OverworldSceneManager {
       vis.ring.scale.setScalar(1 + Math.sin(elapsed * 4 + vis.phase) * 0.05);
     }
 
+    for (const poiVis of this.poiVisuals.values()) {
+      poiVis.beacon.rotation.y = elapsed * 1.4 + poiVis.phase;
+      poiVis.beacon.position.y = poiVis.baseY + Math.sin(elapsed * 2.6 + poiVis.phase) * 0.07;
+      poiVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.5 + poiVis.phase) * 0.06);
+    }
+
+    for (const evVis of this.worldEventVisuals.values()) {
+      evVis.prop.position.y = evVis.baseY + Math.sin(elapsed * 2.2 + evVis.phase) * 0.03;
+      evVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.8 + evVis.phase) * 0.07);
+    }
+
     if (this.waterOverlayMesh) {
       this.waterOverlayMesh.position.y = 0.01 + Math.sin(elapsed * 1.4) * 0.008;
     }
+
+    this.weatherSystem?.step(dt, elapsed);
   }
 
   private afterDraw(cb: () => void) {
@@ -1046,6 +1334,8 @@ export class OverworldSceneManager {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
+    this.detachContextGuards?.();
+    this.detachContextGuards = null;
 
     for (const l of this.boundListeners) {
       l.target.removeEventListener(l.type, l.fn);
@@ -1064,6 +1354,8 @@ export class OverworldSceneManager {
       }
     });
 
+    this.weatherSystem?.dispose();
+    this.weatherSystem = null;
     this.tileAtlas?.dispose();
     this.tileAtlas = null;
     this.texCache.disposeAll();

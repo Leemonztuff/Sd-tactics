@@ -93,7 +93,8 @@ export class AIManager {
             ab,
             tileY,
             defTile ? defTile.y : 0,
-            defRule
+            defRule,
+            { defenderTerrainType: defTile?.terrain, allies: allEntities }
           );
 
           let score = preview.estimatedDamage * (preview.hitChance / 100);

@@ -5,6 +5,17 @@
     --font-display: 'Cinzel', Georgia, serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+
+    /* Valen Tactics Brand Kit Tokens */
+    --valen-canvas: #090d16;
+    --valen-plaque: rgba(13, 18, 30, 0.94);
+    --valen-plaque-elevated: rgba(18, 25, 42, 0.96);
+    --valen-plaque-quiet: rgba(13, 18, 30, 0.88);
+    --valen-gold: #d89b32;
+    --valen-gold-bright: #f3cf7a;
+    --valen-gold-border: rgba(216, 155, 50, 0.36);
+    --valen-steel-border: rgba(148, 163, 184, 0.22);
+    --valen-ivory: #f6eedb;
   }
 
   html,
@@ -16,9 +27,15 @@
     padding: 0;
     overflow: hidden;
     font-family: var(--font-sans);
-    background-color: #0d1017;
-    color: #ede8dc;
+    background-color: var(--valen-canvas);
+    color: var(--valen-ivory);
     touch-action: none;
+  }
+
+  button:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--valen-gold-bright);
+    outline-offset: 2px;
   }
 }
 
@@ -31,15 +48,83 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Signature Valen Brand Kit Surfaces (Zero backdrop-filter over WebGL) */
+.valen-plaque,
 .tactical-panel {
-  background-color: rgba(16, 20, 29, 0.94);
-  border: 1px solid rgba(201, 155, 62, 0.34);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 232, 179, 0.08);
+  position: relative;
+  background:
+    linear-gradient(90deg, #f3cf7a 0%, #f3cf7a 100%) 0 0 / 8px 1.5px no-repeat,
+    linear-gradient(180deg, #f3cf7a 0%, #f3cf7a 100%) 0 0 / 1.5px 8px no-repeat,
+    linear-gradient(90deg, #f3cf7a 0%, #f3cf7a 100%) 100% 0 / 8px 1.5px no-repeat,
+    linear-gradient(180deg, #f3cf7a 0%, #f3cf7a 100%) 100% 0 / 1.5px 8px no-repeat,
+    linear-gradient(90deg, #f3cf7a 0%, #f3cf7a 100%) 0 100% / 8px 1.5px no-repeat,
+    linear-gradient(180deg, #f3cf7a 0%, #f3cf7a 100%) 0 100% / 1.5px 8px no-repeat,
+    linear-gradient(90deg, #f3cf7a 0%, #f3cf7a 100%) 100% 100% / 8px 1.5px no-repeat,
+    linear-gradient(180deg, #f3cf7a 0%, #f3cf7a 100%) 100% 100% / 1.5px 8px no-repeat,
+    linear-gradient(180deg, var(--valen-plaque-elevated) 0%, var(--valen-plaque) 100%);
+  border: 1px solid var(--valen-gold-border);
+  border-radius: 3px;
+  box-shadow:
+    0 14px 36px rgba(0, 0, 0, 0.62),
+    inset 0 1px 0 rgba(243, 207, 122, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
 
+.valen-plaque-quiet,
 .tactical-panel-subtle {
-  background-color: rgba(20, 25, 36, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  position: relative;
+  background-color: var(--valen-plaque-quiet);
+  border: 1px solid var(--valen-steel-border);
+  border-radius: 3px;
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.valen-bevel {
+  border-radius: 3px;
+}
+
+.valen-btn-gold {
+  background: linear-gradient(180deg, #ebb64e 0%, #c68726 100%);
+  color: #090d16;
+  border: 1px solid rgba(255, 232, 179, 0.65);
+  border-radius: 3px;
+  box-shadow:
+    0 4px 14px rgba(198, 135, 38, 0.34),
+    inset 0 1px 0 rgba(255, 248, 224, 0.6);
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), filter 140ms ease;
+}
+
+.valen-btn-gold:hover:not(:disabled) {
+  filter: brightness(1.07);
+}
+
+.valen-btn-gold:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.valen-btn-steel {
+  background: rgba(20, 27, 43, 0.94);
+  color: #e6dfd0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, border-color 140ms ease;
+}
+
+.valen-btn-steel:hover:not(:disabled) {
+  background: rgba(30, 40, 62, 0.98);
+  border-color: rgba(216, 155, 50, 0.55);
+}
+
+.valen-btn-steel:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.valen-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(216, 155, 50, 0.36) 20%, rgba(216, 155, 50, 0.36) 80%, transparent 100%);
 }
 
 @keyframes floatUpFade {
@@ -49,7 +134,7 @@
   }
   18% {
     opacity: 1;
-    transform: translate(-50%, -8px) scale(1.06);
+    transform: translate(-50%, -8px) scale(1.08);
   }
   100% {
     opacity: 0;
@@ -61,18 +146,29 @@
   animation: floatUpFade 1.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .floating-dmg {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* Custom thin scrollbars for logs/lists */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 20, 29, 0.6);
+  background: rgba(11, 16, 28, 0.7);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(201, 155, 62, 0.35);
+  background: rgba(216, 155, 50, 0.38);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(201, 155, 62, 0.6);
+  background: rgba(216, 155, 50, 0.65);
 }

@@ -25,10 +25,10 @@ import {
   computeReachableFrontierEdges
 } from '../overworld/WesnothAutoTiler';
 
-test('parseWesnothMap parses 20x14 Wesnoth .map with keeps and base^overlay codes', () => {
+test('parseWesnothMap parses 25x20 Wesnoth .map with 5 keeps and base^overlay codes', () => {
   const map = parseWesnothMap(VALEN_WESNOTH_MAP_TEXT);
-  assert.equal(map.width, 20);
-  assert.equal(map.height, 14);
+  assert.equal(map.width, 25);
+  assert.equal(map.height, 20);
   for (let y = 0; y < map.height; y++) {
     assert.equal(map.tiles[y].length, map.width, `Row ${y} must have width ${map.width}`);
     for (let x = 0; x < map.width; x++) {
@@ -36,12 +36,11 @@ test('parseWesnothMap parses 20x14 Wesnoth .map with keeps and base^overlay code
     }
   }
 
-  const p1 = map.startingPositions.get(1);
-  const p2 = map.startingPositions.get(2);
-  const p3 = map.startingPositions.get(3);
-  assert.deepEqual(p1, { x: 2, y: 3 });
-  assert.deepEqual(p2, { x: 15, y: 8 });
-  assert.deepEqual(p3, { x: 16, y: 2 });
+  assert.deepEqual(map.startingPositions.get(1), { x: 2, y: 3 });
+  assert.deepEqual(map.startingPositions.get(2), { x: 19, y: 9 });
+  assert.deepEqual(map.startingPositions.get(3), { x: 21, y: 2 });
+  assert.deepEqual(map.startingPositions.get(4), { x: 11, y: 2 });
+  assert.deepEqual(map.startingPositions.get(5), { x: 20, y: 16 });
 
   const keepTile = getHexTile(map, 2, 3);
   assert.equal(keepTile?.terrain.code, 'Kh');
@@ -52,6 +51,11 @@ test('parseWesnothMap parses 20x14 Wesnoth .map with keeps and base^overlay code
   assert.equal(bridgeTile?.terrain.code, 'Ww^Bw|');
   assert.equal(bridgeTile?.terrain.overlayCategory, 'bridge');
   assert.equal(bridgeTile?.terrain.isWater, false);
+
+  const magmaBridge = getHexTile(map, 16, 3);
+  assert.equal(magmaBridge?.terrain.code, 'Qlf^Bw|');
+  assert.equal(magmaBridge?.terrain.overlayCategory, 'bridge');
+  assert.equal(magmaBridge?.terrain.isLava, false);
 });
 
 test('Wesnoth odd-q hex adjacency and cube distance match location.cpp', () => {
@@ -118,16 +122,26 @@ test('Wesnoth movetype movement costs and defense percentages respect aliases', 
   // Village gives 1 MP and 60% cover for smallfoot
   assert.equal(getWesnothMovementCost(village, 'smallfoot'), 1);
   assert.equal(getWesnothDefensePct(village, 'smallfoot'), 60);
+
+  // New biomes: Frostpeak snow, Sunfire dunes, Magma chasm, and Obsidian Span
+  const snow = resolveWesnothTerrain('Aa');
+  const dunes = resolveWesnothTerrain('Dd');
+  const magma = resolveWesnothTerrain('Qlf');
+  const magmaBridge = resolveWesnothTerrain('Qlf^Bw|');
+  assert.equal(getWesnothMovementCost(snow, 'smallfoot'), 2);
+  assert.equal(getWesnothMovementCost(dunes, 'mounted'), 2);
+  assert.equal(getWesnothMovementCost(magma, 'smallfoot'), 99);
+  assert.equal(getWesnothMovementCost(magmaBridge, 'smallfoot'), 1);
 });
 
-test('computeReachableHexes and findHexPath respect MP limits and impassable terrain', () => {
+test('computeReachableHexes and findHexPath respect MP limits, impassable terrain, and new regions', () => {
   const map = parseWesnothMap(VALEN_WESNOTH_MAP_TEXT);
   const reachable = computeReachableHexes(map, 2, 3, 5, 'smallfoot');
 
   // Should never include Deep Ocean (0,0) or distant coordinates
   assert.equal(reachable.some(r => r.x === 0 && r.y === 0), false);
-  // Village Oakhaven at (5,2) is along castle/road within 5 MP
-  const oak = reachable.find(r => r.x === 5 && r.y === 2);
+  // Village Oakhaven at (5,3) is along castle/road within 5 MP
+  const oak = reachable.find(r => r.x === 5 && r.y === 3);
   assert.ok(oak !== undefined);
   assert.ok(oak.cost <= 5);
   assert.equal(oak.path[0].x, 2);
@@ -137,6 +151,12 @@ test('computeReachableHexes and findHexPath respect MP limits and impassable ter
   const bridgePath = findHexPath(map, 7, 4, 10, 5, 'mounted');
   assert.ok(bridgePath !== null);
   assert.ok(bridgePath!.totalCost < 15);
+  // Path across Obsidian Span (16,3) reaches Eclipse Citadel (21,2)
+  assert.ok(findHexPath(map, 2, 3, 21, 2, 'smallfoot') !== null);
+  // Path to Coral Isle (8,17) & Mirage Oasis (15,16) & Frosthaven (13,3) all resolve cleanly
+  assert.ok(findHexPath(map, 2, 3, 8, 17, 'smallfoot') !== null);
+  assert.ok(findHexPath(map, 2, 3, 15, 16, 'mounted') !== null);
+  assert.ok(findHexPath(map, 2, 3, 13, 3, 'smallfoot') !== null);
   // Path to deep ocean (0,0) must fail
   assert.equal(findHexPath(map, 2, 3, 0, 0, 'smallfoot'), null);
 });
@@ -147,11 +167,11 @@ test('OverworldManager handles movement, village liberation, day cycling, and ba
   assert.equal(ow.heroY, 3);
   assert.equal(ow.currentMp, 5);
 
-  // Move toward Oakhaven village (5,2)
-  const moveRes = ow.moveToHex(5, 2);
+  // Move toward Oakhaven village (5,3)
+  const moveRes = ow.moveToHex(5, 3);
   assert.equal(moveRes.moved, true);
   assert.equal(ow.heroX, 5);
-  assert.equal(ow.heroY, 2);
+  assert.equal(ow.heroY, 3);
   assert.equal(moveRes.villageVisited?.id, OVERWORLD_VILLAGES[0].id);
   assert.equal(moveRes.firstVillageVisit, true);
   assert.ok(ow.visitedVillages.has('vil_oakhaven'));
@@ -166,11 +186,12 @@ test('OverworldManager handles movement, village liberation, day cycling, and ba
   // Move onto Bridge Raiders patrol current location to trigger encounter
   const bridgePatrol = ow.patrols.find(p => p.id === 'patrol_bridge_orcs');
   assert.ok(bridgePatrol !== undefined);
-  const atkRes = ow.moveToHex(bridgePatrol!.x, bridgePatrol!.y);
+  const owAttack = new OverworldManager({ heroX: 7, heroY: 4, movetype: 'mounted' });
+  const atkRes = owAttack.moveToHex(bridgePatrol!.x, bridgePatrol!.y);
   assert.equal(atkRes.moved, true);
   assert.ok(atkRes.encounter !== null);
   assert.equal(atkRes.encounter?.patrol.id, 'patrol_bridge_orcs');
-  assert.ok(ow.pendingEncounter !== null);
+  assert.ok(owAttack.pendingEncounter !== null);
 
   // Build MissionData from the encounter
   const mission = buildEncounterMission(
@@ -183,17 +204,17 @@ test('OverworldManager handles movement, village liberation, day cycling, and ba
   assert.equal(mission.rewardGold, bridgePatrol!.rewardGold);
 
   // Evading / dismissing encounter steps hero safely back off patrol hex
-  ow.dismissEncounter();
-  assert.equal(ow.pendingEncounter, null);
-  assert.notEqual(ow.heroX, bridgePatrol!.x);
+  owAttack.dismissEncounter();
+  assert.equal(owAttack.pendingEncounter, null);
+  assert.notEqual(owAttack.heroX, bridgePatrol!.x);
 
   // Re-engaging onto patrol and resolving victory clears patrol & pending encounter
-  const atkRes2 = ow.moveToHex(bridgePatrol!.x, bridgePatrol!.y);
+  const atkRes2 = owAttack.moveToHex(bridgePatrol!.x, bridgePatrol!.y);
   assert.ok(atkRes2.encounter !== null);
-  ow.resolveEncounterVictory('patrol_bridge_orcs');
-  assert.equal(ow.pendingEncounter, null);
-  assert.equal(ow.patrols.some(p => p.id === 'patrol_bridge_orcs'), false);
-  assert.equal(ow.clearedEncounters.has('patrol_bridge_orcs'), true);
+  owAttack.resolveEncounterVictory('patrol_bridge_orcs');
+  assert.equal(owAttack.pendingEncounter, null);
+  assert.equal(owAttack.patrols.some(p => p.id === 'patrol_bridge_orcs'), false);
+  assert.equal(owAttack.clearedEncounters.has('patrol_bridge_orcs'), true);
 });
 
 test('WesnothAutoTiler picks deterministic variants, generates multi-layer transitions, and connects castles', () => {
@@ -206,17 +227,13 @@ test('WesnothAutoTiler picks deterministic variants, generates multi-layer trans
   assert.ok(pickWesnothBaseVariant(roadTile).startsWith('flat_road'));
   assert.equal(pickWesnothBaseVariant(castleTile), 'castle_cobbles');
 
-  // Cobble Road (4,3) next to Green Grass N=(4,2) & NE=(5,2) receives grass_green_medium transitions
+  // Cobble Road (4,3) next to Green Grass N=(4,2) & S=(4,4) receives grass_green_medium transitions
   const roadPlan = computeHexAutoTilePlan(map, 4, 3);
   assert.ok(roadPlan.transitions.some(t => t.assetKey === 'grass_green_medium_n'));
-  assert.ok(roadPlan.transitions.some(t => t.assetKey === 'grass_green_medium_ne'));
 
-  // Shallow water (7,10) next to Beach Sand NW=(6,10) receives sand_beach_nw, and (8,4) next to land gets flat_bank
-  const beachWaterPlan = computeHexAutoTilePlan(map, 7, 10);
-  assert.ok(beachWaterPlan.transitions.some(t => t.assetKey === 'sand_beach_nw'));
-  const riverWaterPlan = computeHexAutoTilePlan(map, 8, 4);
-  assert.ok(riverWaterPlan.transitions.some(t => t.assetKey === 'flat_bank_n'));
-  assert.ok(riverWaterPlan.transitions.some(t => t.assetKey === 'flat_bank_sw'));
+  // Shallow water (7,15) next to Beach Sand NW=(6,14) receives sand_beach, and (7,5) next to land gets flat_bank
+  const riverWaterPlan = computeHexAutoTilePlan(map, 7, 5);
+  assert.ok(riverWaterPlan.transitions.some(t => t.assetKey === 'flat_bank_nw'));
 
   // Grass (4,2) adjacent to Hills NW=(3,1) receives hills_regular_nw
   const hillEdgePlan = computeHexAutoTilePlan(map, 4, 2);

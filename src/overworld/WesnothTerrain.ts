@@ -13,7 +13,10 @@ export type WesnothBaseCategory =
   | 'swamp_water'
   | 'hills'
   | 'mountains'
-  | 'castle';
+  | 'castle'
+  | 'snow'
+  | 'volcanic'
+  | 'lava';
 
 export type WesnothOverlayCategory = 'none' | 'forest' | 'village' | 'bridge';
 
@@ -47,6 +50,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 2,
       mountains: 3,
       castle: 1,
+      snow: 2,
+      volcanic: 1,
+      lava: 99,
       forest: 2,
       village: 1
     },
@@ -59,6 +65,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 50,
       mountains: 60,
       castle: 60,
+      snow: 30,
+      volcanic: 40,
+      lava: 0,
       forest: 50,
       village: 60
     }
@@ -77,6 +86,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 2,
       mountains: 99,
       castle: 1,
+      snow: 2,
+      volcanic: 2,
+      lava: 99,
       forest: 3,
       village: 1
     },
@@ -89,6 +101,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 40,
       mountains: 0,
       castle: 40,
+      snow: 30,
+      volcanic: 35,
+      lava: 0,
       forest: 30,
       village: 40
     }
@@ -107,6 +122,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 2,
       mountains: 3,
       castle: 1,
+      snow: 2,
+      volcanic: 1,
+      lava: 99,
       forest: 1,
       village: 1
     },
@@ -119,6 +137,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 50,
       mountains: 60,
       castle: 60,
+      snow: 40,
+      volcanic: 45,
+      lava: 0,
       forest: 70,
       village: 60
     }
@@ -137,6 +158,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 1,
       mountains: 2,
       castle: 1,
+      snow: 2,
+      volcanic: 1,
+      lava: 99,
       forest: 2,
       village: 1
     },
@@ -149,6 +173,9 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       hills: 50,
       mountains: 60,
       castle: 60,
+      snow: 35,
+      volcanic: 50,
+      lava: 0,
       forest: 50,
       village: 60
     }
@@ -166,6 +193,9 @@ export interface WesnothTerrainInfo {
   sideColor: number;
   baseAsset: string;
   overlayAsset: string | null;
+  biomeTint?: string;
+  biomeTintAlpha?: number;
+  isLava?: boolean;
   isKeep: boolean;
   isVillage: boolean;
   isWater: boolean;
@@ -179,6 +209,9 @@ interface BaseTerrainDef {
   elevation: number;
   sideColor: number;
   asset: string;
+  biomeTint?: string;
+  biomeTintAlpha?: number;
+  isLava?: boolean;
   isKeep?: boolean;
   isWater?: boolean;
   encounterChance: number;
@@ -224,6 +257,77 @@ const BASE_TERRAIN_DEFS: Record<string, BaseTerrainDef> = {
     sideColor: 0x9c895e,
     asset: 'sand_beach',
     encounterChance: 0.08
+  },
+  Dd: {
+    name: 'Sunfire Dunes',
+    category: 'sand',
+    elevation: 0.28,
+    sideColor: 0xa6743c,
+    asset: 'sand_beach',
+    biomeTint: '#eab354',
+    biomeTintAlpha: 0.42,
+    encounterChance: 0.14
+  },
+  Hd: {
+    name: 'Redstone Mesas',
+    category: 'hills',
+    elevation: 0.5,
+    sideColor: 0x8f4e39,
+    asset: 'hills_regular',
+    biomeTint: '#d9774b',
+    biomeTintAlpha: 0.48,
+    encounterChance: 0.18
+  },
+  Aa: {
+    name: 'Frostpeak Snow',
+    category: 'snow',
+    elevation: 0.34,
+    sideColor: 0x6b82a6,
+    asset: 'grass_semi_dry',
+    biomeTint: '#bdd6f5',
+    biomeTintAlpha: 0.68,
+    encounterChance: 0.14
+  },
+  Ha: {
+    name: 'Glacial Hills',
+    category: 'snow',
+    elevation: 0.52,
+    sideColor: 0x566c91,
+    asset: 'hills_regular',
+    biomeTint: '#b4cef2',
+    biomeTintAlpha: 0.62,
+    encounterChance: 0.18
+  },
+  Ms: {
+    name: 'Snowcap Peaks',
+    category: 'mountains',
+    elevation: 0.78,
+    sideColor: 0x637696,
+    asset: 'hills_regular',
+    biomeTint: '#c2d8f5',
+    biomeTintAlpha: 0.58,
+    encounterChance: 0.16
+  },
+  Rd: {
+    name: 'Ashen Barrens',
+    category: 'volcanic',
+    elevation: 0.32,
+    sideColor: 0x45393e,
+    asset: 'flat_dirt',
+    biomeTint: '#594b52',
+    biomeTintAlpha: 0.55,
+    encounterChance: 0.2
+  },
+  Qlf: {
+    name: 'Magma Chasm',
+    category: 'lava',
+    elevation: 0.07,
+    sideColor: 0xb83314,
+    asset: 'water_ocean',
+    biomeTint: '#ea580c',
+    biomeTintAlpha: 0.85,
+    isLava: true,
+    encounterChance: 0
   },
   Ww: {
     name: 'Shallow Water',
@@ -309,7 +413,7 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
   let encounterChance = baseDef.encounterChance;
   let isVillage = false;
 
-  if (baseCode === 'Mm') {
+  if (baseCode === 'Mm' || baseCode === 'Ms') {
     overlayAsset = 'mountains_basic';
   }
 
@@ -326,20 +430,27 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
   } else if (overlayCode === '^Vh') {
     overlayCategory = 'village';
     overlayAsset = 'village_human';
-    name = 'Village Cottage';
+    name =
+      baseCode === 'Aa'
+        ? 'Alpine Citadel Town'
+        : baseCode === 'Dd'
+          ? 'Oasis Bazaar Town'
+          : baseCode === 'Ds'
+            ? 'Harbor Port Town'
+            : 'Village Cottage';
     isVillage = true;
     encounterChance = 0;
   } else if (overlayCode === '^Vhh') {
     overlayCategory = 'village';
     overlayAsset = 'village_hills';
-    name = 'Hill Stone Village';
+    name = baseCode === 'Rd' ? 'Caldera Watch Outpost' : 'Hill Stone Village';
     isVillage = true;
     encounterChance = 0;
   } else if (overlayCode === '^Bw|' || overlayCode === '^Bw/' || overlayCode === '^Bw\\') {
     overlayCategory = 'bridge';
     overlayAsset = 'bridge_stone';
-    name = 'Stone Bridge';
-    elevation = Math.max(elevation, 0.24);
+    name = baseCode === 'Qlf' ? 'Obsidian Span' : 'Stone Bridge';
+    elevation = Math.max(elevation, baseCode === 'Qlf' ? 0.28 : 0.24);
     encounterChance = 0.03;
   }
 
@@ -354,11 +465,14 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
     sideColor: baseDef.sideColor,
     baseAsset: baseDef.asset,
     overlayAsset,
+    biomeTint: baseDef.biomeTint,
+    biomeTintAlpha: baseDef.biomeTintAlpha,
+    isLava: Boolean(baseDef.isLava && overlayCategory !== 'bridge'),
     isKeep: Boolean(baseDef.isKeep),
     isVillage,
     isWater: Boolean(baseDef.isWater && overlayCategory !== 'bridge'),
     encounterChance,
-    battleBiomeSeed: baseCode.charCodeAt(0) * 17 + (overlayCode?.charCodeAt(1) ?? 0)
+    battleBiomeSeed: baseCode.charCodeAt(0) * 17 + baseCode.charCodeAt(1) * 7 + (overlayCode?.charCodeAt(1) ?? 0)
   };
 }
 

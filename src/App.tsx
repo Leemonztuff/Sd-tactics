@@ -12,6 +12,7 @@ import { BattleHUD } from './ui/BattleHUD';
 import { OverworldHUD } from './ui/OverworldHUD';
 import { PauseModal, VictoryModal, DefeatModal } from './ui/Modals';
 import { soundManager } from './utils/SoundManager';
+import { resolveBodyDatasetState } from './ui/brand/BrandKit';
 
 export default function App() {
   const [, setTick] = useState(0);
@@ -19,6 +20,14 @@ export default function App() {
   const overworldContainerRef = useRef<HTMLDivElement>(null);
 
   const forceUpdate = () => setTick(t => t + 1);
+  const bodyState = resolveBodyDatasetState(game.state, game.isPaused);
+
+  useEffect(() => {
+    document.body.dataset.state = bodyState;
+    if (bodyState === 'playing' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }, [bodyState]);
 
   useEffect(() => {
     game.setOnStateChange(forceUpdate);
@@ -94,6 +103,27 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (game.state === 'overworld') {
         switch (e.key) {
+          case '1':
+            if (!game.isPaused) {
+              soundManager.playClick();
+              game.setOverworldMovetype('smallfoot');
+              forceUpdate();
+            }
+            break;
+          case '2':
+            if (!game.isPaused) {
+              soundManager.playClick();
+              game.setOverworldMovetype('mounted');
+              forceUpdate();
+            }
+            break;
+          case '3':
+            if (!game.isPaused) {
+              soundManager.playClick();
+              game.setOverworldMovetype('woodland');
+              forceUpdate();
+            }
+            break;
           case 'ArrowUp':
           case 'w':
           case 'W':
@@ -123,6 +153,19 @@ export default function App() {
             if (game.overworldManager?.pendingEncounter) {
               e.preventDefault();
               game.engagePendingEncounter();
+            } else if (game.overworldManager?.pendingPoi) {
+              e.preventDefault();
+              game.resolvePendingPoi();
+            } else if (game.overworldManager?.pendingWorldEvent) {
+              e.preventDefault();
+              const first = game.overworldManager.pendingWorldEvent.choices.find(
+                c =>
+                  !c.offer?.purchased &&
+                  (!c.costGold || game.saveData.gold >= c.costGold) &&
+                  (!c.costMp || (game.overworldManager?.currentMp ?? 0) >= c.costMp)
+              );
+              if (first) game.resolveWorldEventChoice(first.id);
+              else game.dismissPendingWorldEvent();
             }
             break;
           case 'q':
@@ -138,6 +181,8 @@ export default function App() {
           case 'Escape':
             if (game.overworldManager?.pendingEncounter) {
               game.evadePendingEncounter();
+            } else if (game.overworldManager?.pendingWorldEvent) {
+              game.dismissPendingWorldEvent();
             } else {
               game.togglePause();
             }
@@ -152,6 +197,59 @@ export default function App() {
       }
 
       if (game.state !== 'battle') return;
+
+      const isPlayerActive = game.activeUnit?.faction === 'player' && !game.isPaused;
+      if (isPlayerActive && game.phase === 'action_hub') {
+        switch (e.key) {
+          case '1':
+            e.preventDefault();
+            soundManager.playClick();
+            if (!game.hasMovedThisTurn) game.enterMoveSelect();
+            else if (!game.hasActedThisTurn) game.undoMove();
+            forceUpdate();
+            return;
+          case 'u':
+          case 'U':
+            if (game.hasMovedThisTurn && !game.hasActedThisTurn) {
+              e.preventDefault();
+              soundManager.playClick();
+              game.undoMove();
+              forceUpdate();
+            }
+            return;
+          case '2':
+            if (!game.hasActedThisTurn && game.activeUnit) {
+              e.preventDefault();
+              soundManager.playClick();
+              const atkId = game.activeUnit.jobId === 'tirador' ? 'aimed_shot' : 'slash';
+              game.selectAbility(atkId);
+              forceUpdate();
+            }
+            return;
+          case '3':
+            if (!game.hasActedThisTurn) {
+              e.preventDefault();
+              soundManager.playClick();
+              game.enterActionSelect();
+              forceUpdate();
+            }
+            return;
+          case '4':
+            if (!game.hasActedThisTurn && game.getBattleConsumables().length > 0) {
+              e.preventDefault();
+              soundManager.playClick();
+              game.enterBagSelect();
+              forceUpdate();
+            }
+            return;
+          case '5':
+            e.preventDefault();
+            soundManager.playClick();
+            game.enterFacingSelect();
+            forceUpdate();
+            return;
+        }
+      }
 
       switch (e.key) {
         case 'ArrowUp':
@@ -201,7 +299,12 @@ export default function App() {
           forceUpdate();
           break;
         case 'Escape':
-          if (game.phase === 'move_select' || game.phase === 'action_select' || game.phase === 'target_select') {
+          if (
+            game.phase === 'move_select' ||
+            game.phase === 'action_select' ||
+            game.phase === 'bag_select' ||
+            game.phase === 'target_select'
+          ) {
             game.cancelSubMenu();
           } else {
             game.togglePause();
@@ -215,7 +318,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-[#0d1017] select-none">
+    <div className="relative w-full h-screen overflow-hidden bg-[#090d16] select-none">
       {game.state === 'menu' && <MainMenu onUpdate={forceUpdate} />}
       {game.state === 'campaign_select' && <CampaignSelect onUpdate={forceUpdate} />}
       {game.state === 'roster' && <RosterView onUpdate={forceUpdate} />}
@@ -245,3 +348,4 @@ export default function App() {
     </div>
   );
 }
+

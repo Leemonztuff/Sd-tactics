@@ -89,6 +89,27 @@ export class WesnothTileAtlas {
             ctx.drawImage(trImg, ox, oy, TILE_PX, TILE_PX);
           }
         }
+
+        // Apply calibrated biome grading (Frostpeaks, Sunfire Dunes, Ashen Caldera, Magma)
+        if (tile.terrain.baseCode === 'Qlf') {
+          ctx.save();
+          ctx.fillStyle = '#36100a';
+          ctx.fillRect(ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
+          ctx.fillStyle = '#d9480f';
+          ctx.fillRect(ox + 10, oy + 14, 52, 8);
+          ctx.fillRect(ox + 18, oy + 34, 40, 7);
+          ctx.fillRect(ox + 12, oy + 50, 44, 6);
+          ctx.fillStyle = '#facc15';
+          ctx.fillRect(ox + 18, oy + 16, 26, 3);
+          ctx.fillRect(ox + 26, oy + 36, 22, 3);
+          ctx.restore();
+        } else if (tile.terrain.biomeTint && tile.terrain.biomeTintAlpha) {
+          ctx.save();
+          ctx.globalAlpha = tile.terrain.biomeTintAlpha;
+          ctx.fillStyle = tile.terrain.biomeTint;
+          ctx.fillRect(ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
+          ctx.restore();
+        }
       }
     }
 

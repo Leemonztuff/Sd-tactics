@@ -6,7 +6,8 @@ import {
   Direction,
   FloatingTextEvent,
   JobId,
-  TileData
+  TileData,
+  AbilityDefinition
 } from '../types/game';
 import { ABILITIES, CAMPAIGN_MISSIONS, ITEMS, JOBS, TERRAIN_RULES } from './GameConfig';
 import { GridSystem, ReachableTile } from '../world/GridSystem';
@@ -15,14 +16,17 @@ import { TurnManager } from '../combat/TurnManager';
 import { CombatManager } from '../combat/CombatManager';
 import { AIManager } from '../combat/AIManager';
 import { SceneManager } from '../rendering/SceneManager';
+import { SkillVfxElement } from '../rendering/BattleVfxSystem';
 import { soundManager } from '../utils/SoundManager';
-import { calculateDamagePreview, DamagePreview } from '../combat/CombatFormulas';
+import { calculateDamagePreview, DamagePreview, calculateMissionStars, MissionStarEvaluation, SynergyTag } from '../combat/CombatFormulas';
 import { loadSaveFromStorage, writeSaveToStorage, clearSaveStorage } from '../utils/SaveSystem';
 import { OverworldManager, OverworldEncounter, ActivePatrolState } from '../overworld/OverworldManager';
+import { ActiveWorldEventNode } from '../overworld/OverworldEvents';
 import { OverworldSceneManager } from '../overworld/OverworldSceneManager';
 import { WesnothHexTile, HexCoord } from '../overworld/WesnothMapSystem';
 import { WesnothMovetypeId } from '../overworld/WesnothTerrain';
-import { OverworldVillageSpec, buildEncounterMission } from '../overworld/WesnothOverworldMap';
+import { OverworldPoiSpec, OverworldVillageSpec, buildEncounterMission } from '../overworld/WesnothOverworldMap';
+import { QUALITY_PRESETS, QualityTier, probeClientDeviceTier } from '../rendering/BrawlStyleSystem';
 
 export type GameScreen = 'menu' | 'overworld' | 'campaign_select' | 'roster' | 'battle' | 'victory' | 'defeat';
 
@@ -39,15 +43,24 @@ export interface ProjectedUnitMarker {
   isActive: boolean;
 }
 
+export { calculateMissionStars };
+export type { MissionStarEvaluation };
+
 export interface BattleSummary {
   missionTitle: string;
   turnsElapsed: number;
+  parTurns: number;
   damageDealt: number;
   enemiesDefeated: number;
   rewardExp: number;
   rewardJp: number;
   rewardGold: number;
+  bonusGold: number;
+  starsEarned: 1 | 2 | 3;
+  starCriteria: { victory: boolean; noFallen: boolean; withinPar: boolean };
   levelUps: string[];
+  sealsRestored?: number;
+  campaignComplete?: boolean;
 }
 
 export class Game {
@@ -80,6 +93,7 @@ export class Game {
   public reachableTiles: ReachableTile[] = [];
   public targetableTiles: TileData[] = [];
   public selectedAbilityId: string | null = null;
+  public selectedItemId: string | null = null;
   public combatLog: string[] = [];
   public floatingTexts: FloatingTextEvent[] = [];
 
@@ -93,10 +107,13 @@ export class Game {
   public overworldScene: OverworldSceneManager | null = null;
   public hoveredHexInfo: {
     tile: WesnothHexTile;
+    regionName: string;
     moveCost: number;
     defensePct: number;
     patrol: ActivePatrolState | null;
     village: OverworldVillageSpec | null;
+    poi: OverworldPoiSpec | null;
+    worldEventNode: ActiveWorldEventNode | null;
   } | null = null;
   public hoveredHexPath: { path: HexCoord[]; cost: number; withinMp: boolean } | null = null;
   public overworldMoving = false;
@@ -105,10 +122,22 @@ export class Game {
 
   private timers: number[] = [];
   public onStateChange: (() => void) | null = null;
+  public qualityTier: QualityTier = 'balanced';
 
   constructor() {
     this.saveData = loadSaveFromStorage();
+    this.qualityTier = this.saveData.qualityTier ?? probeClientDeviceTier(false);
     this.syncBodyState();
+  }
+
+  public setQualityTier(tier: QualityTier) {
+    this.qualityTier = tier;
+    this.saveData.qualityTier = tier;
+    const preset = QUALITY_PRESETS[tier];
+    this.overworldScene?.applyQualityPreset(preset);
+    this.sceneManager?.applyQualityPreset(preset);
+    this.saveGame();
+    this.notify();
   }
 
   public setOnStateChange(cb: (() => void) | null) {
@@ -161,7 +190,10 @@ export class Game {
         day: this.overworldManager.day,
         movetype: this.overworldManager.movetype,
         visitedVillages: Array.from(this.overworldManager.visitedVillages),
-        clearedEncounters: Array.from(this.overworldManager.clearedEncounters)
+        clearedEncounters: Array.from(this.overworldManager.clearedEncounters),
+        collectedPois: Array.from(this.overworldManager.collectedPois),
+        activeWorldEvents: this.overworldManager.activeWorldEvents.map(e => ({ ...e })),
+        worldEventCooldown: this.overworldManager.worldEventCooldown
       };
     }
     writeSaveToStorage(this.saveData);
@@ -203,10 +235,17 @@ export class Game {
     }
 
     const mgr = this.overworldManager;
-    const scene = new OverworldSceneManager(container);
+    const preset = QUALITY_PRESETS[this.qualityTier];
+    const scene = new OverworldSceneManager(container, preset);
+    if (scene.isSoftwareGl && !this.saveData.qualityTier) {
+      this.qualityTier = 'eco';
+      scene.applyQualityPreset(QUALITY_PRESETS.eco);
+    }
     this.overworldScene = scene;
     scene.buildOverworldScene(mgr.map);
     scene.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+    scene.syncPois(mgr.getActivePois(), mgr.map);
+    scene.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
     scene.snapCameraToHero(mgr.heroX, mgr.heroY, mgr.map);
     scene.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
     scene.setHoveredHex(mgr.heroX, mgr.heroY, mgr.map);
@@ -228,7 +267,16 @@ export class Game {
   }
 
   public handleOverworldHexHover(x: number, y: number) {
-    if (!this.overworldManager || this.isPaused || this.overworldMoving || this.overworldManager.pendingEncounter) return;
+    if (
+      !this.overworldManager ||
+      this.isPaused ||
+      this.overworldMoving ||
+      this.overworldManager.pendingEncounter ||
+      this.overworldManager.pendingPoi ||
+      this.overworldManager.pendingWorldEvent
+    ) {
+      return;
+    }
     const info = this.overworldManager.getTileInspectInfo(x, y);
     if (!info) return;
     this.hoveredHexInfo = info;
@@ -243,24 +291,50 @@ export class Game {
   }
 
   public handleOverworldHexClick(x: number, y: number) {
-    if (!this.overworldManager || this.isPaused || this.overworldMoving || this.overworldManager.pendingEncounter) return;
+    if (
+      !this.overworldManager ||
+      this.isPaused ||
+      this.overworldMoving ||
+      this.overworldManager.pendingEncounter ||
+      this.overworldManager.pendingPoi ||
+      this.overworldManager.pendingWorldEvent
+    ) {
+      return;
+    }
     const res = this.overworldManager.moveToHex(x, y);
     if (!res.moved) {
-      // Allow clicking on current hex if patrol shares it, or inspect
       this.handleOverworldHexHover(x, y);
       return;
     }
-    this.animateOverworldStep(res.path, res.villageVisited ? res.firstVillageVisit ? res.villageVisited.rewardGold : 0 : 0, res.encounter);
+    this.animateOverworldStep(
+      res.path,
+      res.villageVisited && res.firstVillageVisit ? res.villageVisited.rewardGold : 0,
+      res.encounter
+    );
   }
 
   public stepOverworldDirection(dx: number, dy: number) {
-    if (!this.overworldManager || this.state !== 'overworld' || this.isPaused || this.overworldMoving || this.overworldManager.pendingEncounter) return;
+    if (
+      !this.overworldManager ||
+      this.state !== 'overworld' ||
+      this.isPaused ||
+      this.overworldMoving ||
+      this.overworldManager.pendingEncounter ||
+      this.overworldManager.pendingPoi ||
+      this.overworldManager.pendingWorldEvent
+    ) {
+      return;
+    }
     const res = this.overworldManager.stepByDirection(dx, dy);
     if (!res.moved) {
       this.notify();
       return;
     }
-    this.animateOverworldStep(res.path, res.villageVisited && res.firstVillageVisit ? res.villageVisited.rewardGold : 0, res.encounter);
+    this.animateOverworldStep(
+      res.path,
+      res.villageVisited && res.firstVillageVisit ? res.villageVisited.rewardGold : 0,
+      res.encounter
+    );
   }
 
   private animateOverworldStep(path: HexCoord[], bonusGold: number, encounter: OverworldEncounter | null) {
@@ -282,10 +356,14 @@ export class Game {
       if (idx >= path.length) {
         this.overworldMoving = false;
         this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+        this.overworldScene?.syncPois(mgr.getActivePois(), mgr.map);
+        this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
         this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
         this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
         if (encounter) {
           soundManager.playSlash();
+        } else if (mgr.pendingPoi || mgr.pendingWorldEvent) {
+          soundManager.playSpell();
         }
         this.saveGame();
         this.notify();
@@ -304,6 +382,129 @@ export class Game {
     stepVisual();
   }
 
+  public resolvePendingPoi() {
+    if (!this.overworldManager?.pendingPoi) return;
+    const poi = this.overworldManager.pendingPoi;
+    soundManager.playClick();
+
+    if (poi.rewardGold && poi.rewardGold > 0) {
+      this.saveData.gold += poi.rewardGold;
+    }
+    if (poi.rewardItem) {
+      const existing = this.saveData.inventory.find(i => i.itemId === poi.rewardItem!.itemId);
+      if (existing) existing.count += poi.rewardItem.count;
+      else this.saveData.inventory.push({ itemId: poi.rewardItem.itemId, count: poi.rewardItem.count });
+    }
+    const em = new EntityManager();
+    if (poi.rewardJpAll && poi.rewardJpAll > 0) {
+      for (const hero of this.saveData.roster) {
+        em.awardExperience(hero, 0, poi.rewardJpAll);
+      }
+    }
+    if (poi.recruit && !this.saveData.roster.some(h => h.id === poi.recruit!.heroId)) {
+      const r = poi.recruit;
+      const newHero = em.createEntity(r.heroId, r.name, 'player', r.jobId, r.level, 0, 0, 0);
+      if (r.weaponId) em.equipItem(newHero, r.weaponId, 'weapon');
+      if (r.armorId) em.equipItem(newHero, r.armorId, 'armor');
+      if (r.accessoryId) em.equipItem(newHero, r.accessoryId, 'accessory');
+      this.saveData.roster.push(newHero);
+      const squad = this.getActiveSquadIds();
+      if (squad.length < 4 && !squad.includes(newHero.id)) {
+        this.saveData.activeSquadIds = [...squad, newHero.id];
+      }
+      this.overworldManager.log(`${newHero.name} joined the Order of the Dawn!`);
+    }
+
+    this.overworldManager.pendingPoi = null;
+    this.overworldScene?.syncPois(this.overworldManager.getActivePois(), this.overworldManager.map);
+    this.hoveredHexInfo = this.overworldManager.getTileInspectInfo(this.overworldManager.heroX, this.overworldManager.heroY);
+    this.saveGame();
+    this.notify();
+  }
+
+  public resolveWorldEventChoice(choiceId: string): boolean {
+    const mgr = this.overworldManager;
+    const ev = mgr?.pendingWorldEvent;
+    if (!mgr || !ev) return false;
+
+    const choice = ev.choices.find(c => c.id === choiceId);
+    if (!choice) return false;
+    if (choice.offer?.purchased) return false;
+    if (choice.costGold && this.saveData.gold < choice.costGold) return false;
+    if (choice.costMp && mgr.currentMp < choice.costMp) return false;
+
+    soundManager.playClick();
+
+    if (choice.costGold) {
+      this.saveData.gold -= choice.costGold;
+    }
+    if (choice.costMp) {
+      mgr.currentMp = Math.max(0, mgr.currentMp - choice.costMp);
+    }
+    if (choice.rewardGold) {
+      this.saveData.gold += choice.rewardGold;
+    }
+    if (choice.rewardMp) {
+      mgr.currentMp = Math.min(mgr.maxMp + 3, mgr.currentMp + choice.rewardMp);
+    }
+    if (choice.reduceAmbushPct) {
+      mgr.ambushMeter = Math.max(0, mgr.ambushMeter - choice.reduceAmbushPct);
+    }
+    if (choice.rewardJpAll && choice.rewardJpAll > 0) {
+      const em = new EntityManager();
+      for (const hero of this.saveData.roster) {
+        em.awardExperience(hero, 0, choice.rewardJpAll);
+      }
+    }
+
+    const grantedItem = choice.offer
+      ? { itemId: choice.offer.itemId, count: choice.offer.count }
+      : choice.rewardItem;
+    if (grantedItem) {
+      const existing = this.saveData.inventory.find(i => i.itemId === grantedItem.itemId);
+      if (existing) existing.count += grantedItem.count;
+      else this.saveData.inventory.push({ itemId: grantedItem.itemId, count: grantedItem.count });
+    }
+
+    if (choice.offer) {
+      choice.offer.purchased = true;
+      const itemName = ITEMS[choice.offer.itemId]?.name ?? choice.offer.itemId;
+      mgr.log(`Purchased ${itemName} (-${choice.offer.priceGold} G) from ${ev.title}.`);
+      this.saveGame();
+      this.notify();
+      return true;
+    }
+
+    mgr.log(`${ev.title}: ${choice.label}.`);
+    mgr.dismissPendingWorldEvent();
+    mgr.recomputeReachable();
+    this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+    this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+    this.saveGame();
+    this.notify();
+    return true;
+  }
+
+  public dismissPendingWorldEvent() {
+    if (!this.overworldManager?.pendingWorldEvent) return;
+    soundManager.playClick();
+    this.overworldManager.dismissPendingWorldEvent();
+    this.overworldManager.recomputeReachable();
+    this.overworldScene?.syncWorldEvents(this.overworldManager.activeWorldEvents, this.overworldManager.map);
+    this.overworldScene?.showReachableHexes(
+      this.overworldManager.reachable,
+      this.overworldManager.map,
+      this.overworldManager.patrols
+    );
+    this.hoveredHexInfo = this.overworldManager.getTileInspectInfo(
+      this.overworldManager.heroX,
+      this.overworldManager.heroY
+    );
+    this.saveGame();
+    this.notify();
+  }
+
   public setOverworldMovetype(mt: WesnothMovetypeId) {
     if (!this.overworldManager || this.overworldMoving) return;
     soundManager.playClick();
@@ -317,11 +518,20 @@ export class Game {
   }
 
   public endOverworldDay() {
-    if (!this.overworldManager || this.overworldMoving || this.overworldManager.pendingEncounter) return;
+    if (
+      !this.overworldManager ||
+      this.overworldMoving ||
+      this.overworldManager.pendingEncounter ||
+      this.overworldManager.pendingPoi ||
+      this.overworldManager.pendingWorldEvent
+    ) {
+      return;
+    }
     soundManager.playClick();
     const { encounter } = this.overworldManager.endDay();
     const mgr = this.overworldManager;
     this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+    this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
     this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
     if (encounter) soundManager.playSlash();
     this.saveGame();
@@ -424,6 +634,37 @@ export class Game {
     return ok;
   }
 
+  public getActiveSquadIds(): string[] {
+    const rosterIds = new Set(this.saveData.roster.map(h => h.id));
+    const configured = (this.saveData.activeSquadIds ?? []).filter(id => rosterIds.has(id));
+    if (configured.length > 0) return configured.slice(0, 4);
+    return this.saveData.roster.slice(0, 4).map(h => h.id);
+  }
+
+  public getDeployedSquad(): EntityData[] {
+    const ids = new Set(this.getActiveSquadIds());
+    return this.saveData.roster.filter(h => ids.has(h.id)).slice(0, 4);
+  }
+
+  public toggleSquadDeployment(heroId: string): boolean {
+    if (!this.saveData.roster.some(h => h.id === heroId)) return false;
+    const current = this.getActiveSquadIds();
+    if (current.includes(heroId)) {
+      if (current.length <= 1) return false;
+      this.saveData.activeSquadIds = current.filter(id => id !== heroId);
+    } else {
+      if (current.length >= 4) return false;
+      this.saveData.activeSquadIds = [...current, heroId];
+    }
+    this.saveGame();
+    this.notify();
+    return true;
+  }
+
+  public getBattleConsumables(): { itemId: string; count: number }[] {
+    return this.saveData.inventory.filter(i => i.count > 0 && ITEMS[i.itemId]?.type === 'consumable');
+  }
+
   // ===== BATTLE INITIALIZATION =====
   public startMission(missionIndex: number) {
     const mission = CAMPAIGN_MISSIONS[missionIndex];
@@ -441,6 +682,8 @@ export class Game {
     this.isPaused = false;
     this.battleDamageDealt = 0;
     this.battleEnemiesDefeated = 0;
+    this.selectedItemId = null;
+    this.selectedAbilityId = null;
     this.lastSummary = null;
     this.floatingTexts = [];
 
@@ -458,8 +701,9 @@ export class Game {
     );
     this.entityManager = new EntityManager();
 
-    // Spawn player roster at mission spawn points
-    this.saveData.roster.forEach((hero, index) => {
+    // Spawn active deployed squad (up to 4 heroes) at mission spawn points
+    const squad = this.getDeployedSquad();
+    squad.forEach((hero, index) => {
       const spawn = mission.playerSpawns[index] ?? { x: 1 + index, z: 2 };
       const tile = this.grid!.getTile(spawn.x, spawn.z);
       const ent = this.entityManager!.addExistingEntity(hero);
@@ -503,12 +747,17 @@ export class Game {
       this.sceneManager.dispose();
       this.sceneManager = null;
     }
-    this.sceneManager = new SceneManager(container);
+    const preset = QUALITY_PRESETS[this.qualityTier];
+    this.sceneManager = new SceneManager(container, preset);
+    if (this.sceneManager.isSoftwareGl && !this.saveData.qualityTier) {
+      this.qualityTier = 'eco';
+      this.sceneManager.applyQualityPreset(QUALITY_PRESETS.eco);
+    }
     this.sceneManager.onTileClick = (x, z) => this.handleTileClick(x, z);
     this.sceneManager.onTileHover = (x, z) => this.handleTileHover(x, z);
 
     if (this.grid) {
-      this.sceneManager.buildGridScene(this.grid);
+      this.sceneManager.buildGridScene(this.grid, this.currentMission?.elevationSeed ?? 1);
       this.sceneManager.syncEntities(this.entityManager?.getAllEntities() || []);
     }
     this.refreshPhaseVisuals();
@@ -587,7 +836,20 @@ export class Game {
       soundManager.playVictory();
       this.phase = 'victory';
       this.state = 'victory';
-      this.saveData.gold += this.currentMission.rewardGold;
+
+      const fallenAllies = this.entityManager
+        .getAllEntities()
+        .filter(e => e.faction === 'player' && !e.isAlive).length;
+      const turnsElapsed = this.turnManager?.totalTurnsElapsed ?? 1;
+      const parTurns = this.currentMission.parTurns ?? 12;
+      const starEval = calculateMissionStars(fallenAllies, turnsElapsed, parTurns);
+
+      const bonusGold = Math.round(this.currentMission.rewardGold * starEval.bonusMultiplier);
+      const totalGold = this.currentMission.rewardGold + bonusGold;
+      const totalExp = Math.round(this.currentMission.rewardExp * (1 + starEval.bonusMultiplier));
+      const totalJp = Math.round(this.currentMission.rewardJp * (1 + starEval.bonusMultiplier));
+
+      this.saveData.gold += totalGold;
       if (this.activeEncounterPatrolId && this.overworldManager) {
         this.overworldManager.resolveEncounterVictory(this.activeEncounterPatrolId);
         this.activeEncounterPatrolId = null;
@@ -595,7 +857,13 @@ export class Game {
         this.saveData.completedMissions.push(this.currentMission.id);
       }
 
-      // Persist earned EXP/JP & Level Ups back to roster
+      const prevStars = this.saveData.missionStars?.[this.currentMission.id] ?? 0;
+      this.saveData.missionStars = {
+        ...(this.saveData.missionStars ?? {}),
+        [this.currentMission.id]: Math.max(prevStars, starEval.stars)
+      };
+
+      // Persist earned EXP/JP & Level Ups back to deployed squad
       const levelUps: string[] = [];
       const em = new EntityManager();
       for (const rosterHero of this.saveData.roster) {
@@ -607,21 +875,30 @@ export class Game {
           rosterHero.jobLevels = { ...battleEnt.jobLevels };
           rosterHero.unlockedJobs = [...battleEnt.unlockedJobs];
         }
-        const res = em.awardExperience(rosterHero, this.currentMission.rewardExp, this.currentMission.rewardJp);
+        const res = em.awardExperience(rosterHero, totalExp, totalJp);
         if (res.leveledUp) {
           levelUps.push(`${rosterHero.name} reached Lv.${rosterHero.level}!`);
         }
       }
 
+      const quest = this.overworldManager?.getQuestProgress();
+      const allChaptersDone = CAMPAIGN_MISSIONS.every(m => this.saveData.completedMissions.includes(m.id));
+
       this.lastSummary = {
         missionTitle: this.currentMission.title,
-        turnsElapsed: this.turnManager?.totalTurnsElapsed ?? 1,
+        turnsElapsed,
+        parTurns,
         damageDealt: this.battleDamageDealt,
         enemiesDefeated: this.battleEnemiesDefeated,
-        rewardExp: this.currentMission.rewardExp,
-        rewardJp: this.currentMission.rewardJp,
-        rewardGold: this.currentMission.rewardGold,
-        levelUps
+        rewardExp: totalExp,
+        rewardJp: totalJp,
+        rewardGold: totalGold,
+        bonusGold,
+        starsEarned: starEval.stars,
+        starCriteria: { victory: true, noFallen: starEval.noFallen, withinPar: starEval.withinPar },
+        levelUps,
+        sealsRestored: quest?.sealsRestored,
+        campaignComplete: Boolean(quest?.campaignComplete || allChaptersDone)
       };
 
       this.saveGame();
@@ -635,11 +912,15 @@ export class Game {
       this.lastSummary = {
         missionTitle: this.currentMission.title,
         turnsElapsed: this.turnManager?.totalTurnsElapsed ?? 1,
+        parTurns: this.currentMission.parTurns ?? 12,
         damageDealt: this.battleDamageDealt,
         enemiesDefeated: this.battleEnemiesDefeated,
         rewardExp: 0,
         rewardJp: 0,
         rewardGold: 0,
+        bonusGold: 0,
+        starsEarned: 1,
+        starCriteria: { victory: false, noFallen: false, withinPar: false },
         levelUps: []
       };
       this.notify();
@@ -685,9 +966,13 @@ export class Game {
         .filter(t => !(t.x === this.activeUnit!.x && t.z === this.activeUnit!.z))
         .map(t => ({ x: t.x, z: t.z, y: t.y, color: 0x3b82f6 }));
       this.sceneManager.showHighlights(hl, 0x3b82f6);
-    } else if (this.phase === 'target_select' && this.selectedAbilityId) {
-      const ab = ABILITIES[this.selectedAbilityId];
-      const baseColor = ab?.targetType === 'ally' || ab?.targetType === 'self' ? 0x10b981 : 0xef4444;
+    } else if (this.phase === 'target_select' && (this.selectedAbilityId || this.selectedItemId)) {
+      const ab = this.selectedAbilityId ? ABILITIES[this.selectedAbilityId] : null;
+      const item = this.selectedItemId ? ITEMS[this.selectedItemId] : null;
+      const isFriendly =
+        ab ? ab.targetType === 'ally' || ab.targetType === 'self' : item?.consumableEffect?.targetType === 'ally';
+      const aoeRadius = ab ? ab.aoeRadius : item?.consumableEffect?.aoeRadius ?? 0;
+      const baseColor = isFriendly ? 0x10b981 : 0xef4444;
       const hl: { x: number; z: number; y: number; color: number }[] = this.targetableTiles.map(t => ({
         x: t.x,
         z: t.z,
@@ -696,8 +981,8 @@ export class Game {
       }));
 
       // Overlay AoE blast preview on hovered tile
-      if (ab && ab.aoeRadius > 0 && this.hoveredTile && this.targetableTiles.some(t => t.x === this.hoveredTile!.x && t.z === this.hoveredTile!.z)) {
-        const aoeTiles = this.grid.getAoeTiles(this.hoveredTile.x, this.hoveredTile.z, ab.aoeRadius);
+      if (aoeRadius > 0 && this.hoveredTile && this.targetableTiles.some(t => t.x === this.hoveredTile!.x && t.z === this.hoveredTile!.z)) {
+        const aoeTiles = this.grid.getAoeTiles(this.hoveredTile.x, this.hoveredTile.z, aoeRadius);
         aoeTiles.forEach(at => {
           const idx = hl.findIndex(item => item.x === at.x && item.z === at.z);
           if (idx >= 0) hl[idx].color = 0xf59e0b;
@@ -745,6 +1030,13 @@ export class Game {
     this.notify();
   }
 
+  public enterBagSelect() {
+    if (!this.activeUnit || this.activeUnit.faction !== 'player' || this.hasActedThisTurn || this.isPaused) return;
+    this.phase = 'bag_select';
+    this.refreshPhaseVisuals();
+    this.notify();
+  }
+
   public selectAbility(abilityId: string) {
     if (!this.activeUnit || !this.grid || this.hasActedThisTurn || this.isPaused) return;
     const ability = ABILITIES[abilityId];
@@ -756,14 +1048,36 @@ export class Game {
       return;
     }
 
+    this.selectedItemId = null;
     this.selectedAbilityId = abilityId;
     this.targetableTiles = this.grid.getAbilityTargetTiles(this.activeUnit.x, this.activeUnit.z, ability);
 
-    // Self-target skills can highlight current tile immediately
     if (ability.targetType === 'self') {
       this.updateTargetPreviewAt(this.activeUnit.x, this.activeUnit.z);
     }
 
+    this.phase = 'target_select';
+    this.refreshPhaseVisuals();
+    this.notify();
+  }
+
+  public selectConsumable(itemId: string) {
+    if (!this.activeUnit || !this.grid || this.hasActedThisTurn || this.isPaused) return;
+    const inv = this.saveData.inventory.find(i => i.itemId === itemId && i.count > 0);
+    const item = ITEMS[itemId];
+    if (!inv || !item?.consumableEffect) return;
+
+    this.selectedAbilityId = null;
+    this.selectedItemId = itemId;
+    this.targetableTiles = this.combatManager.getConsumableTargetTiles(
+      this.activeUnit.x,
+      this.activeUnit.z,
+      itemId,
+      this.grid
+    );
+    if (item.consumableEffect.targetType === 'ally') {
+      this.updateTargetPreviewAt(this.activeUnit.x, this.activeUnit.z);
+    }
     this.phase = 'target_select';
     this.refreshPhaseVisuals();
     this.notify();
@@ -774,8 +1088,14 @@ export class Game {
       this.togglePause();
       return;
     }
-    if (this.phase === 'move_select' || this.phase === 'action_select' || this.phase === 'target_select') {
+    if (
+      this.phase === 'move_select' ||
+      this.phase === 'action_select' ||
+      this.phase === 'bag_select' ||
+      this.phase === 'target_select'
+    ) {
       this.selectedAbilityId = null;
+      this.selectedItemId = null;
       this.targetPreview = null;
       this.phase = 'action_hub';
       this.sceneManager?.clearPathPreview();
@@ -850,19 +1170,70 @@ export class Game {
   }
 
   private updateTargetPreviewAt(x: number, z: number) {
-    if (!this.activeUnit || !this.selectedAbilityId || !this.entityManager || !this.grid) {
+    if (!this.activeUnit || (!this.selectedAbilityId && !this.selectedItemId) || !this.entityManager || !this.grid) {
       this.targetPreview = null;
       return;
     }
-    const ab = ABILITIES[this.selectedAbilityId];
-    if (!ab) {
-      this.targetPreview = null;
-      return;
-    }
+
     const inRange = this.targetableTiles.some(t => t.x === x && t.z === z);
     const target = this.entityManager.getEntityAt(x, z);
-
     if (!inRange || !target) {
+      this.targetPreview = null;
+      return;
+    }
+
+    if (this.selectedItemId) {
+      const item = ITEMS[this.selectedItemId];
+      const eff = item?.consumableEffect;
+      if (!eff) {
+        this.targetPreview = null;
+        return;
+      }
+      const validFaction =
+        (eff.targetType === 'enemy' && target.faction !== this.activeUnit.faction) ||
+        (eff.targetType === 'ally' && target.faction === this.activeUnit.faction);
+      if (!validFaction) {
+        this.targetPreview = null;
+        return;
+      }
+      const isHeal = !eff.damage;
+      const tile = this.grid.getTile(x, z);
+      const igniteBonus = eff.damage && tile && (tile.terrain === 'grass' || tile.terrain === 'mud') ? 1.2 : 1.0;
+      const estimatedDamage = eff.damage
+        ? Math.round(eff.damage * igniteBonus)
+        : eff.healHp ?? eff.healMp ?? 0;
+      const synergies: SynergyTag[] = [];
+      let synergyMultiplier = 1.0;
+      if (igniteBonus > 1) {
+        synergies.push({
+          id: 'ignite_terrain',
+          label: 'Ignite Terrain',
+          bonusLabel: '+20% · Burn',
+          multiplier: 1.2,
+          accent: 'amber'
+        });
+        synergyMultiplier = 1.2;
+      }
+      this.targetPreview = {
+        target,
+        preview: {
+          estimatedDamage,
+          isHeal,
+          hitChance: 100,
+          critChance: 0,
+          angle: 'front',
+          heightDiff: this.activeUnit.y - target.y,
+          facingBonus: 1.0,
+          elevationBonus: 1.0,
+          synergies,
+          synergyMultiplier
+        }
+      };
+      return;
+    }
+
+    const ab = ABILITIES[this.selectedAbilityId!];
+    if (!ab) {
       this.targetPreview = null;
       return;
     }
@@ -880,7 +1251,10 @@ export class Game {
 
     const tile = this.grid.getTile(x, z);
     const rule = tile ? TERRAIN_RULES[tile.terrain] : TERRAIN_RULES.grass;
-    const preview = calculateDamagePreview(this.activeUnit, target, ab, this.activeUnit.y, target.y, rule);
+    const preview = calculateDamagePreview(this.activeUnit, target, ab, this.activeUnit.y, target.y, rule, {
+      defenderTerrainType: tile?.terrain,
+      allies: this.entityManager.getAllEntities()
+    });
     this.targetPreview = { target, preview };
   }
 
@@ -909,21 +1283,91 @@ export class Game {
       }
     }
 
-    // Target execution
-    if (this.phase === 'target_select' && this.selectedAbilityId) {
+    // Target execution (Ability or Consumable)
+    if (this.phase === 'target_select' && (this.selectedAbilityId || this.selectedItemId)) {
       const validTile = this.targetableTiles.some(t => t.x === x && t.z === z);
       if (!validTile) return;
 
-      const ability = ABILITIES[this.selectedAbilityId];
-      if (!ability) return;
-
-      // Orient attacker toward target before firing
       if (x !== this.activeUnit.x || z !== this.activeUnit.z) {
         const dx = x - this.activeUnit.x;
         const dz = z - this.activeUnit.z;
         this.activeUnit.facing =
           Math.abs(dx) >= Math.abs(dz) ? (dx > 0 ? 'east' : 'west') : dz > 0 ? 'south' : 'north';
       }
+
+      if (this.selectedItemId) {
+        const itemId = this.selectedItemId;
+        const item = ITEMS[itemId];
+        if (!item) return;
+
+        this.phase = 'resolving';
+        this.sceneManager?.clearHighlights();
+        this.sceneManager?.triggerAttackLunge(this.activeUnit.id);
+        this.sceneManager?.syncEntities(this.entityManager.getAllEntities());
+        this.notify();
+
+        const res = this.combatManager.executeConsumable(this.activeUnit, x, z, itemId, this.grid, this.entityManager);
+        if (!res.success) {
+          this.combatLog.unshift(res.message);
+          this.phase = 'target_select';
+          this.refreshPhaseVisuals();
+          this.notify();
+          return;
+        }
+
+        const inv = this.saveData.inventory.find(i => i.itemId === itemId);
+        if (inv) {
+          inv.count -= 1;
+          this.saveData.inventory = this.saveData.inventory.filter(i => i.count > 0);
+        }
+
+        this.hasActedThisTurn = true;
+        this.lastActionCtCost = 85;
+        this.combatLog.unshift(res.message);
+        soundManager.playSpell();
+
+        this.sceneManager?.triggerSkillCast({
+          originX: this.activeUnit.x,
+          originY: this.activeUnit.y,
+          originZ: this.activeUnit.z,
+          targetX: x,
+          targetY: tile?.y ?? 0,
+          targetZ: z,
+          element: item.consumableEffect?.damage ? 'fire' : 'heal',
+          isRanged: true,
+          aoeRadius: item.consumableEffect?.aoeRadius ?? 0,
+          heavy: Boolean(item.consumableEffect?.damage)
+        });
+
+        res.outcomes.forEach(o => {
+          if (o.damage < 0) {
+            this.pushFloatingText(o.x, o.y, o.z, `+${Math.abs(o.damage)}`, 'heal');
+            this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0x34d399, false);
+          } else if (o.damage > 0) {
+            this.battleDamageDealt += o.damage;
+            if (o.defeated) this.battleEnemiesDefeated++;
+            this.pushFloatingText(o.x, o.y, o.z, `-${o.damage}`, 'damage');
+            this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0xf97316, o.defeated);
+          } else if (o.statusApplied) {
+            this.pushFloatingText(o.x, o.y, o.z, '+35 MP', 'heal');
+            this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0x38bdf8, false);
+          }
+        });
+
+        this.sceneManager?.syncEntities(this.entityManager.getAllEntities());
+        this.targetPreview = null;
+        this.selectedItemId = null;
+
+        this.schedule(() => {
+          if (this.checkVictoryOrDefeat()) return;
+          this.phase = 'facing_select';
+          this.notify();
+        }, 520);
+        return;
+      }
+
+      const ability = ABILITIES[this.selectedAbilityId!];
+      if (!ability) return;
 
       this.phase = 'resolving';
       this.sceneManager?.clearHighlights();
@@ -935,7 +1379,7 @@ export class Game {
         this.activeUnit,
         x,
         z,
-        this.selectedAbilityId,
+        this.selectedAbilityId!,
         this.grid,
         this.entityManager
       );
@@ -963,7 +1407,26 @@ export class Game {
         }
       }
 
-      // Visual bursts & floating damage numbers
+      // Visual bursts, 3D skill VFX, synergy chain arcs & floating damage numbers
+      const vfxElement = this.resolveSkillVfxElement(ability);
+      this.sceneManager?.triggerSkillCast({
+        originX: this.activeUnit.x,
+        originY: this.activeUnit.y,
+        originZ: this.activeUnit.z,
+        targetX: x,
+        targetY: tile?.y ?? 0,
+        targetZ: z,
+        element: vfxElement,
+        isRanged: ability.range > 1,
+        aoeRadius: ability.aoeRadius,
+        heavy: ability.aoeRadius > 0 || ability.power >= 1.4 || res.outcomes.some(o => o.isCrit || o.defeated)
+      });
+
+      res.chainArcs?.forEach(arc => {
+        this.sceneManager?.spawnChainArc(arc.fromX, arc.fromY, arc.fromZ, arc.toX, arc.toY, arc.toZ, arc.colorHex);
+      });
+
+      const burstHex = this.resolveElementColor(vfxElement);
       res.outcomes.forEach(o => {
         if (!o.isHit) {
           this.pushFloatingText(o.x, o.y, o.z, 'MISS', 'miss');
@@ -982,8 +1445,15 @@ export class Game {
             o.isCrit ? `CRIT ${o.damage}!` : `-${o.damage}`,
             o.isCrit ? 'crit' : 'damage'
           );
-          const color = ability.element === 'fire' ? 0xf97316 : ability.element === 'lightning' ? 0x38bdf8 : 0xfacc15;
-          this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, color, o.isCrit || o.defeated);
+          this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, burstHex, o.isCrit || o.defeated);
+          const leadSyn = o.synergies?.find(
+            s => s.id !== 'high_ground' && s.id !== 'backstab'
+          );
+          if (leadSyn) {
+            this.schedule(() => {
+              this.pushFloatingText(o.x, o.y + 0.35, o.z, `${leadSyn.label.toUpperCase()}!`, 'status');
+            }, 140);
+          }
         } else if (o.statusApplied) {
           this.pushFloatingText(o.x, o.y, o.z, o.statusApplied.toUpperCase(), 'status');
           this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0xa855f7, false);
@@ -1077,6 +1547,26 @@ export class Game {
           if (ab?.type === 'physical') soundManager.playSlash();
           else soundManager.playSpell();
 
+          const aiVfxEl = ab ? this.resolveSkillVfxElement(ab) : 'steel';
+          const aiTargetTile = this.grid.getTile(plan.targetCoord.x, plan.targetCoord.z);
+          this.sceneManager?.triggerSkillCast({
+            originX: enemy.x,
+            originY: enemy.y,
+            originZ: enemy.z,
+            targetX: plan.targetCoord.x,
+            targetY: aiTargetTile?.y ?? 0,
+            targetZ: plan.targetCoord.z,
+            element: aiVfxEl,
+            isRanged: (ab?.range ?? 1) > 1,
+            aoeRadius: ab?.aoeRadius ?? 0,
+            heavy: (ab?.aoeRadius ?? 0) > 0 || (ab?.power ?? 1) >= 1.4
+          });
+
+          res.chainArcs?.forEach(arc => {
+            this.sceneManager?.spawnChainArc(arc.fromX, arc.fromY, arc.fromZ, arc.toX, arc.toY, arc.toZ, arc.colorHex);
+          });
+
+          const aiBurstHex = this.resolveElementColor(aiVfxEl);
           res.outcomes.forEach(o => {
             if (!o.isHit) {
               this.pushFloatingText(o.x, o.y, o.z, 'MISS', 'miss');
@@ -1085,7 +1575,10 @@ export class Game {
               this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0x34d399, false);
             } else if (o.damage > 0) {
               this.pushFloatingText(o.x, o.y, o.z, `-${o.damage}`, o.isCrit ? 'crit' : 'damage');
-              this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0xef4444, o.isCrit || o.defeated);
+              this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, aiBurstHex, o.isCrit || o.defeated);
+            } else if (o.statusApplied) {
+              this.pushFloatingText(o.x, o.y, o.z, o.statusApplied.toUpperCase(), 'status');
+              this.sceneManager?.triggerHitEffect(o.targetId, o.x, o.y, o.z, 0xa855f7, false);
             }
           });
         }
@@ -1107,6 +1600,38 @@ export class Game {
       this.executeAnimatedMove(enemy, plan.path, afterMove);
     } else {
       afterMove();
+    }
+  }
+
+  private resolveSkillVfxElement(ability: AbilityDefinition): SkillVfxElement {
+    if (ability.type === 'heal') return 'heal';
+    if (ability.type === 'buff') return 'buff';
+    if (ability.element) return ability.element;
+    if (ability.statusEffect === 'poison') return 'venom';
+    if (ability.statusEffect === 'acid') return 'acid';
+    if (ability.statusEffect === 'slow' || ability.statusEffect === 'snare') return 'astral';
+    return 'steel';
+  }
+
+  private resolveElementColor(el: SkillVfxElement): number {
+    switch (el) {
+      case 'fire':
+        return 0xf97316;
+      case 'lightning':
+        return 0x38bdf8;
+      case 'astral':
+        return 0xc084fc;
+      case 'solar':
+        return 0xfacc15;
+      case 'acid':
+      case 'venom':
+        return 0x84cc16;
+      case 'heal':
+        return 0x34d399;
+      case 'buff':
+        return 0x60a5fa;
+      default:
+        return 0xfef08a;
     }
   }
 

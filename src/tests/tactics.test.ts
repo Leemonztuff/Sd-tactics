@@ -103,6 +103,8 @@ test('CombatManager executes AoE, healing, status effects, and knockback', () =>
   const knight = em.createEntity('k1', 'Valerius', 'player', 'guard', 2, 3, 2, 0);
   const e1 = em.createEntity('e1', 'Bandit A', 'enemy', 'duelist', 1, 4, 2, 0);
   const e2 = em.createEntity('e2', 'Bandit B', 'enemy', 'duelist', 1, 4, 3, 0);
+  e1.stats.maxHp = 220;
+  e1.stats.hp = 220;
 
   grid.setOccupant(mage.x, mage.z, mage.id);
   grid.setOccupant(knight.x, knight.z, knight.id);

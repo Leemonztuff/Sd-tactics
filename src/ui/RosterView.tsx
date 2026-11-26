@@ -4,7 +4,11 @@ import { JOBS, ITEMS, ABILITIES } from '../game/GameConfig';
 import { EntityManager } from '../entities/EntityManager';
 import { soundManager } from '../utils/SoundManager';
 import { JobId } from '../types/game';
-import { ArrowLeft, Check, Lock, ShoppingBag } from 'lucide-react';
+import { ArrowLeft, Lock, ShoppingBag, Eye } from 'lucide-react';
+import { JOB_ACCENT } from './brand/BrandKit';
+import { JobCrestGlyph } from './brand/ValenIcons';
+import { ValenMeter } from './brand/ValenMeter';
+import { ModelViewerModal } from './ModelViewerModal';
 
 interface Props {
   onUpdate: () => void;
@@ -13,89 +17,166 @@ interface Props {
 export const RosterView: React.FC<Props> = ({ onUpdate }) => {
   const [selectedHeroId, setSelectedHeroId] = useState<string>(game.saveData.roster[0]?.id || '');
   const [activeTab, setActiveTab] = useState<'jobs' | 'gear' | 'shop'>('jobs');
+  const [showModelTester, setShowModelTester] = useState(false);
 
   const selectedHero = game.saveData.roster.find(h => h.id === selectedHeroId) || game.saveData.roster[0];
+  const activeSquadIds = game.getActiveSquadIds();
+  const consumables = game.getBattleConsumables();
   const em = new EntityManager();
 
   return (
-    <main className="w-full h-full bg-[#0d1017] text-[#ede8dc] flex flex-col overflow-y-auto p-6 md:p-8">
+    <main className="w-full h-full bg-[#090d16] text-[#f6eedb] flex flex-col overflow-y-auto p-5 sm:p-8">
       <div className="max-w-6xl mx-auto w-full space-y-6">
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
-          <div className="flex items-center gap-4">
+        <header className="flex flex-wrap items-center justify-between gap-4 pb-4">
+          <div className="flex items-center gap-3.5">
+            <button
+              type="button"
+              onClick={e => {
+                e.currentTarget.blur();
+                soundManager.playClick();
+                if (game.overworldManager) {
+                  game.startOverworld();
+                } else {
+                  game.setScreen('campaign_select');
+                }
+                onUpdate();
+              }}
+              className="flex items-center gap-2 px-4 py-2 valen-btn-steel valen-bevel text-sm font-semibold cursor-pointer"
+            >
+              <ArrowLeft size={16} /> {game.overworldManager ? 'Overworld' : 'War Map'}
+            </button>
+            <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#f6eedb] tracking-wide">
+              Barracks &amp; Armory
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-3 sm:gap-5 text-sm font-mono-num">
             <button
               type="button"
               onClick={() => {
                 soundManager.playClick();
-                game.setScreen('campaign_select');
-                onUpdate();
+                setShowModelTester(true);
               }}
-              className="flex items-center gap-2 px-4 py-2 tactical-panel-subtle hover:bg-slate-800 rounded-lg text-sm text-slate-200 transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 valen-btn-steel valen-bevel text-xs font-bold text-[#f3cf7a] border border-[#d89b32]/50 hover:bg-[#d89b32]/15 cursor-pointer"
             >
-              <ArrowLeft size={16} /> War Map
+              <Eye size={14} />
+              <span>Probar Modelo 3D</span>
             </button>
-            <h1 className="font-display text-2xl font-bold text-[#f6eedb]">Barracks & Armory</h1>
+            <span className="text-sky-300 font-semibold">
+              Squad: {activeSquadIds.length}/4
+            </span>
+            <span className="text-[#f3cf7a] font-bold">Gold: {game.saveData.gold} G</span>
           </div>
+        </header>
 
-          <div className="flex items-center gap-4 text-sm font-mono-num">
-            <span className="text-[#e2b95b] font-semibold">Gold: {game.saveData.gold} G</span>
-          </div>
-        </div>
+        <div className="valen-divider" />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left Column: Hero Roster */}
-          <div className="lg:col-span-4 space-y-3">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Squad Roster</h2>
+          <div className="lg:col-span-4 space-y-2.5">
+            <h2 className="text-[11px] font-semibold text-[#8a99b3] uppercase tracking-[0.18em] mb-1">
+              Squad Roster ({game.saveData.roster.length} Heroes)
+            </h2>
             {game.saveData.roster.map(hero => {
               const job = JOBS[hero.jobId];
               const isSelected = hero.id === selectedHero?.id;
+              const isDeployed = activeSquadIds.includes(hero.id);
               return (
-                <button
+                <div
                   key={hero.id}
-                  type="button"
                   onClick={() => {
                     soundManager.playClick();
                     setSelectedHeroId(hero.id);
                   }}
-                  className={`w-full text-left p-4 rounded-xl border transition-colors cursor-pointer ${
+                  className={`w-full text-left p-3.5 valen-bevel transition-colors cursor-pointer ${
                     isSelected
-                      ? 'tactical-panel border-[#c98b2c] text-white'
-                      : 'tactical-panel-subtle hover:bg-slate-800/80 text-slate-300'
+                      ? 'valen-plaque text-white'
+                      : 'valen-plaque-quiet hover:border-[#d89b32]/45 text-[#cbd5e1]'
                   }`}
                 >
-                  <div className="flex justify-between items-baseline">
-                    <span className="font-display font-bold text-lg text-[#f6eedb]">{hero.name}</span>
-                    <span className="font-mono-num text-xs text-[#e2b95b]">
+                  <div className="flex justify-between items-center gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <JobCrestGlyph jobId={hero.jobId} className="w-5 h-5 shrink-0" />
+                      <span className="font-display font-bold text-base sm:text-lg text-[#f6eedb] truncate">
+                        {hero.name}
+                      </span>
+                    </div>
+                    <span className="font-mono-num text-xs text-[#f3cf7a] shrink-0">
                       Lv.{hero.level} · {hero.jp} JP
                     </span>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {job.name} · HP {hero.stats.maxHp} · MP {hero.stats.maxMp}
-                  </p>
-                </button>
+                  <div className="flex items-center justify-between gap-2 mt-1.5">
+                    <p className="text-xs text-[#8a99b3] font-mono-num">
+                      {job.name} · HP {hero.stats.maxHp} · MP {hero.stats.maxMp}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        e.currentTarget.blur();
+                        soundManager.playClick();
+                        game.toggleSquadDeployment(hero.id);
+                        onUpdate();
+                      }}
+                      className={`px-2.5 py-0.5 text-[11px] font-semibold valen-bevel cursor-pointer ${
+                        isDeployed
+                          ? 'bg-emerald-600/25 text-emerald-300 border border-emerald-500/40'
+                          : 'valen-btn-steel text-[#8a99b3]'
+                      }`}
+                    >
+                      {isDeployed ? 'Deployed' : 'Reserve'}
+                    </button>
+                  </div>
+                </div>
               );
             })}
           </div>
 
           {/* Right Column: Hero Details + Tabs */}
           {selectedHero && (
-            <div className="lg:col-span-8 tactical-panel rounded-xl p-6 space-y-6">
-              {/* Hero Summary & Stats */}
-              <div className="flex flex-wrap justify-between items-start gap-4 border-b border-slate-800 pb-4">
-                <div>
-                  <h2 className="font-display text-2xl font-bold text-[#f6eedb]">{selectedHero.name}</h2>
-                  <p className="text-sm text-[#e2b95b]">
-                    {JOBS[selectedHero.jobId].name} · {JOBS[selectedHero.jobId].role}
-                  </p>
+            <div className="lg:col-span-8 valen-plaque valen-bevel p-5 sm:p-6 space-y-5">
+              {/* Hero Summary */}
+              <div className="flex flex-wrap justify-between items-start gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 valen-plaque-quiet valen-bevel flex items-center justify-center shrink-0">
+                    <JobCrestGlyph jobId={selectedHero.jobId} className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-2xl font-bold text-[#f6eedb]">
+                      {selectedHero.name}
+                    </h2>
+                    <p className="text-xs sm:text-sm text-[#f3cf7a]">
+                      {JOBS[selectedHero.jobId].name} · {JOB_ACCENT[selectedHero.jobId].tag} ·{' '}
+                      <span className="text-[#8a99b3]">{JOBS[selectedHero.jobId].role}</span>
+                    </p>
+                  </div>
                 </div>
-                <div className="text-right font-mono-num text-xs text-slate-400 space-y-1">
-                  <div>EXP: {selectedHero.exp} / {selectedHero.level * 100}</div>
-                  <div className="text-[#e2b95b] font-semibold">Available JP: {selectedHero.jp}</div>
+
+                <div className="w-44 space-y-1.5 font-mono-num text-xs">
+                  <div className="flex justify-between text-[#8a99b3]">
+                    <span>EXP</span>
+                    <span className="text-[#cbd5e1]">
+                      {selectedHero.exp} / {selectedHero.level * 100}
+                    </span>
+                  </div>
+                  <ValenMeter
+                    value={selectedHero.exp}
+                    max={selectedHero.level * 100}
+                    heightClass="h-1.5"
+                    fillClass="bg-[#d89b32]"
+                    ghostClass="bg-amber-200/50"
+                  />
+                  <div className="text-right text-[#f3cf7a] font-bold pt-0.5">
+                    Available JP: {selectedHero.jp}
+                  </div>
                 </div>
               </div>
 
-              {/* Compact 8-Stat Strip */}
-              <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 text-center font-mono-num">
+              <div className="valen-divider" />
+
+              {/* Single-Surface 8-Stat Tabular Strip (zero nested mini-boxes) */}
+              <div className="grid grid-cols-4 sm:grid-cols-8 divide-x divide-white/10 text-center font-mono-num">
                 {[
                   ['HP', selectedHero.stats.maxHp],
                   ['MP', selectedHero.stats.maxMp],
@@ -106,29 +187,33 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                   ['MOV', selectedHero.stats.mov],
                   ['JMP', selectedHero.stats.jmp]
                 ].map(([label, val]) => (
-                  <div key={String(label)} className="bg-slate-900/90 border border-slate-800 rounded-lg py-2 px-1">
-                    <div className="text-[11px] text-slate-400">{label}</div>
-                    <div className="text-sm font-bold text-[#f6eedb]">{val}</div>
+                  <div key={String(label)} className="py-1 px-1">
+                    <div className="text-[10px] uppercase tracking-wider text-[#8a99b3]">{label}</div>
+                    <div className="text-sm sm:text-base font-bold text-[#f6eedb] mt-0.5">{val}</div>
                   </div>
                 ))}
               </div>
 
-              {/* Navigation Tabs */}
-              <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+              {/* Navigation Tabs (Clean underline tabs, no pill capsules) */}
+              <div className="flex items-center gap-6 border-b border-white/10">
                 <button
                   type="button"
                   onClick={() => setActiveTab('jobs')}
-                  className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                    activeTab === 'jobs' ? 'bg-[#c98b2c] text-[#0d1017]' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+                  className={`pb-2.5 text-xs font-bold uppercase tracking-[0.14em] border-b-2 transition-colors cursor-pointer ${
+                    activeTab === 'jobs'
+                      ? 'border-[#f3cf7a] text-[#f3cf7a]'
+                      : 'border-transparent text-[#8a99b3] hover:text-[#f6eedb]'
                   }`}
                 >
-                  Jobs & Skills
+                  Jobs &amp; Skills
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab('gear')}
-                  className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                    activeTab === 'gear' ? 'bg-[#c98b2c] text-[#0d1017]' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+                  className={`pb-2.5 text-xs font-bold uppercase tracking-[0.14em] border-b-2 transition-colors cursor-pointer ${
+                    activeTab === 'gear'
+                      ? 'border-[#f3cf7a] text-[#f3cf7a]'
+                      : 'border-transparent text-[#8a99b3] hover:text-[#f6eedb]'
                   }`}
                 >
                   Equipment
@@ -136,11 +221,13 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                 <button
                   type="button"
                   onClick={() => setActiveTab('shop')}
-                  className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-                    activeTab === 'shop' ? 'bg-[#c98b2c] text-[#0d1017]' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+                  className={`pb-2.5 text-xs font-bold uppercase tracking-[0.14em] border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    activeTab === 'shop'
+                      ? 'border-[#f3cf7a] text-[#f3cf7a]'
+                      : 'border-transparent text-[#8a99b3] hover:text-[#f6eedb]'
                   }`}
                 >
-                  <ShoppingBag size={14} /> Armory Shop
+                  <ShoppingBag size={13} /> Armory Shop
                 </button>
               </div>
 
@@ -148,10 +235,10 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
               {activeTab === 'jobs' && (
                 <div className="space-y-6">
                   <div>
-                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                    <h3 className="text-[11px] font-semibold text-[#8a99b3] uppercase tracking-[0.18em] mb-3">
                       Available Jobs
                     </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       {(Object.keys(JOBS) as JobId[]).map(jobId => {
                         const job = JOBS[jobId];
                         const unlocked = em.canUnlockJob(selectedHero, jobId);
@@ -165,30 +252,34 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                             key={jobId}
                             type="button"
                             disabled={!unlocked || isCurrent}
-                            onClick={() => {
+                            onClick={e => {
+                              e.currentTarget.blur();
                               soundManager.playClick();
                               game.changeHeroJob(selectedHero.id, jobId);
                               onUpdate();
                             }}
-                            className={`p-3 rounded-lg border text-left transition-colors ${
+                            className={`p-3 valen-bevel text-left transition-colors ${
                               isCurrent
-                                ? 'border-[#c98b2c] bg-[#c98b2c]/15 cursor-default'
+                                ? 'border border-[#d89b32] bg-[#d89b32]/15 cursor-default'
                                 : unlocked
-                                  ? 'border-slate-700 bg-slate-900 hover:border-slate-500 cursor-pointer'
-                                  : 'border-slate-800 bg-slate-950/60 opacity-60 cursor-not-allowed'
+                                  ? 'valen-btn-steel cursor-pointer'
+                                  : 'border border-white/10 bg-[#090d16]/70 opacity-55 cursor-not-allowed'
                             }`}
                           >
-                            <div className="flex justify-between items-center">
-                              <span className="font-semibold text-sm text-[#f6eedb]">{job.name}</span>
+                            <div className="flex justify-between items-center gap-2">
+                              <span className="flex items-center gap-2 font-semibold text-sm text-[#f6eedb]">
+                                <JobCrestGlyph jobId={jobId} className="w-4 h-4 shrink-0" />
+                                {job.name}
+                              </span>
                               {isCurrent ? (
-                                <span className="text-xs text-[#e2b95b] font-semibold">Active</span>
+                                <span className="text-xs text-[#f3cf7a] font-bold">Active</span>
                               ) : !unlocked ? (
-                                <Lock size={13} className="text-slate-500" />
+                                <Lock size={13} className="text-[#8a99b3]" />
                               ) : (
-                                <span className="text-xs text-sky-400">Switch</span>
+                                <span className="text-xs text-sky-400 font-semibold">Switch</span>
                               )}
                             </div>
-                            <p className="text-xs text-slate-400 mt-1">
+                            <p className="text-xs text-[#8a99b3] mt-1">
                               {unlocked ? job.description : `Requires: ${reqText}`}
                             </p>
                           </button>
@@ -199,10 +290,10 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
 
                   {/* Current Job Abilities Unlock & Equip */}
                   <div>
-                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    <h3 className="text-[11px] font-semibold text-[#8a99b3] uppercase tracking-[0.18em] mb-2">
                       {JOBS[selectedHero.jobId].name} Abilities · Equipped ({selectedHero.equippedAbilities.length}/4)
                     </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="divide-y divide-white/10">
                       {JOBS[selectedHero.jobId].allowedAbilities.map(abId => {
                         const ab = ABILITIES[abId];
                         if (!ab) return null;
@@ -212,26 +303,27 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                         return (
                           <div
                             key={abId}
-                            className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between gap-3"
+                            className="py-3 flex items-center justify-between gap-3"
                           >
                             <div>
                               <div className="text-sm font-semibold text-[#f6eedb]">{ab.name}</div>
-                              <div className="text-xs text-slate-400">
-                                {ab.description} ({ab.mpCost} MP · Rng {ab.range})
+                              <div className="text-xs text-[#8a99b3] font-mono-num mt-0.5">
+                                {ab.description.replace(/\.$/, '')} · {ab.mpCost} MP · Rng {ab.range}
                               </div>
                             </div>
                             {isLearned ? (
                               <button
                                 type="button"
-                                onClick={() => {
+                                onClick={e => {
+                                  e.currentTarget.blur();
                                   soundManager.playClick();
                                   game.toggleHeroAbility(selectedHero.id, abId);
                                   onUpdate();
                                 }}
-                                className={`px-3 py-1.5 rounded text-xs font-semibold shrink-0 cursor-pointer ${
+                                className={`px-3.5 py-1.5 valen-bevel text-xs font-semibold shrink-0 cursor-pointer ${
                                   isEquipped
-                                    ? 'bg-emerald-600/25 text-emerald-300 border border-emerald-500/40'
-                                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                                    ? 'bg-emerald-600/25 text-emerald-300 border border-emerald-500/45'
+                                    : 'valen-btn-steel text-[#cbd5e1]'
                                 }`}
                               >
                                 {isEquipped ? 'Equipped' : 'Equip'}
@@ -240,12 +332,13 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                               <button
                                 type="button"
                                 disabled={selectedHero.jp < ab.jpCost}
-                                onClick={() => {
+                                onClick={e => {
+                                  e.currentTarget.blur();
                                   soundManager.playClick();
                                   game.unlockHeroAbility(selectedHero.id, abId);
                                   onUpdate();
                                 }}
-                                className="px-3 py-1.5 rounded text-xs font-semibold bg-[#c98b2c] disabled:bg-slate-800 disabled:text-slate-500 text-[#0d1017] shrink-0 cursor-pointer"
+                                className="px-3.5 py-1.5 valen-btn-gold valen-bevel disabled:opacity-40 text-xs font-bold font-mono-num shrink-0 cursor-pointer"
                               >
                                 Learn {ab.jpCost} JP
                               </button>
@@ -261,7 +354,7 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
               {/* TAB 2: EQUIPMENT */}
               {activeTab === 'gear' && (
                 <div className="space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-white/10">
                     {(['weapon', 'armor', 'accessory'] as const).map(slot => {
                       const equippedId = selectedHero.equipment[slot];
                       const equippedItem = equippedId ? ITEMS[equippedId] : null;
@@ -270,15 +363,18 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                       );
 
                       return (
-                        <div key={slot} className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-                          <div className="text-xs text-slate-400 uppercase tracking-wider">{slot}</div>
+                        <div key={slot} className="py-3 sm:py-0 sm:px-4 first:sm:pl-0 last:sm:pr-0 space-y-3">
+                          <div className="text-[11px] text-[#8a99b3] uppercase tracking-[0.16em]">
+                            {slot}
+                          </div>
                           <div className="font-semibold text-sm text-[#f6eedb]">
                             {equippedItem ? equippedItem.name : 'None Equipped'}
                           </div>
                           {equippedItem && (
                             <button
                               type="button"
-                              onClick={() => {
+                              onClick={e => {
+                                e.currentTarget.blur();
                                 soundManager.playClick();
                                 game.equipRosterItem(selectedHero.id, null, slot);
                                 onUpdate();
@@ -289,10 +385,13 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                             </button>
                           )}
 
-                          <div className="pt-2 border-t border-slate-800 space-y-1.5">
-                            <div className="text-[11px] text-slate-500">Inventory ({available.length})</div>
+                          <div className="valen-divider" />
+                          <div className="space-y-1.5">
+                            <div className="text-[11px] text-[#8a99b3] font-mono-num">
+                              Inventory ({available.length})
+                            </div>
                             {available.length === 0 ? (
-                              <div className="text-xs text-slate-500">No {slot}s in bag</div>
+                              <div className="text-xs text-[#8a99b3]">No {slot}s in bag</div>
                             ) : (
                               available.map(inv => {
                                 const it = ITEMS[inv.itemId];
@@ -300,15 +399,16 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                                   <button
                                     key={inv.itemId}
                                     type="button"
-                                    onClick={() => {
+                                    onClick={e => {
+                                      e.currentTarget.blur();
                                       soundManager.playClick();
                                       game.equipRosterItem(selectedHero.id, inv.itemId, slot);
                                       onUpdate();
                                     }}
-                                    className="w-full text-left px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex justify-between items-center cursor-pointer"
+                                    className="w-full text-left px-2.5 py-1.5 valen-btn-steel valen-bevel text-xs flex justify-between items-center cursor-pointer"
                                   >
                                     <span>{it.name}</span>
-                                    <span className="font-mono-num text-[#e2b95b]">×{inv.count}</span>
+                                    <span className="font-mono-num text-[#f3cf7a]">×{inv.count}</span>
                                   </button>
                                 );
                               })
@@ -318,36 +418,64 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                       );
                     })}
                   </div>
+
+                  <div className="valen-divider" />
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-[#8a99b3] uppercase tracking-[0.16em] font-semibold">
+                        Shared Battle Bag
+                      </span>
+                      <span className="text-[#8a99b3]">Usable by any deployed hero in combat</span>
+                    </div>
+                    {consumables.length === 0 ? (
+                      <div className="text-xs text-[#8a99b3]">
+                        No consumables in Battle Bag. Visit Armory Shop to restock.
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
+                        {consumables.map(entry => (
+                          <div key={entry.itemId}>
+                            <span className="font-semibold text-[#f6eedb]">{ITEMS[entry.itemId]?.name}</span>{' '}
+                            <span className="font-mono-num text-emerald-300 font-bold">×{entry.count}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* TAB 3: ARMORY SHOP */}
               {activeTab === 'shop' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="divide-y divide-white/10">
                   {Object.values(ITEMS).map(item => {
                     const owned = game.saveData.inventory.find(i => i.itemId === item.id)?.count ?? 0;
                     const canAfford = game.saveData.gold >= item.price;
                     return (
                       <div
                         key={item.id}
-                        className="p-3.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between gap-3"
+                        className="py-3 flex items-center justify-between gap-4"
                       >
                         <div>
                           <div className="text-sm font-semibold text-[#f6eedb]">
                             {item.name}{' '}
-                            {owned > 0 && <span className="text-xs text-emerald-400 font-mono-num">(Owned {owned})</span>}
+                            {owned > 0 && (
+                              <span className="text-xs text-emerald-400 font-mono-num">(Owned {owned})</span>
+                            )}
                           </div>
-                          <div className="text-xs text-slate-400 mt-0.5">{item.description}</div>
+                          <div className="text-xs text-[#8a99b3] mt-0.5">{item.description}</div>
                         </div>
                         <button
                           type="button"
                           disabled={!canAfford}
-                          onClick={() => {
+                          onClick={e => {
+                            e.currentTarget.blur();
                             soundManager.playClick();
                             game.buyShopItem(item.id);
                             onUpdate();
                           }}
-                          className="px-3.5 py-2 rounded-lg text-xs font-bold font-mono-num bg-[#c98b2c] hover:bg-[#dc9d38] disabled:bg-slate-800 disabled:text-slate-500 text-[#0d1017] shrink-0 cursor-pointer"
+                          className="px-4 py-2 valen-btn-gold valen-bevel disabled:opacity-40 text-xs font-bold font-mono-num shrink-0 cursor-pointer"
                         >
                           {item.price} G
                         </button>
@@ -360,6 +488,17 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
           )}
         </div>
       </div>
+
+      <ModelViewerModal
+        isOpen={showModelTester}
+        onClose={() => setShowModelTester(false)}
+        onEnterBattle={() => {
+          setShowModelTester(false);
+          game.startMission(0);
+          onUpdate();
+        }}
+      />
     </main>
   );
 };
+

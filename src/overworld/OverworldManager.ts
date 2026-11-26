@@ -11,10 +11,15 @@ import {
 } from './WesnothMapSystem';
 import {
   INITIAL_OVERWORLD_PATROLS,
+  OVERWORLD_POIS,
   OVERWORLD_VILLAGES,
   OverworldPatrolSpec,
+  OverworldPoiSpec,
+  OverworldQuestProgress,
   OverworldVillageSpec,
-  VALEN_WESNOTH_MAP_TEXT
+  VALEN_WESNOTH_MAP_TEXT,
+  computeOverworldQuestProgress,
+  getOverworldRegion
 } from './WesnothOverworldMap';
 import {
   WESNOTH_MOVETYPES,
@@ -22,6 +27,15 @@ import {
   getWesnothDefensePct,
   getWesnothMovementCost
 } from './WesnothTerrain';
+import {
+  ActiveWorldEventNode,
+  OverworldWorldEvent,
+  buildWorldEventFromTemplate,
+  getTileWorldEventChance,
+  isTileEligibleForWorldEvent,
+  pickTemplateForTile,
+  spawnDailyWorldEvents
+} from './OverworldEvents';
 
 export interface ActivePatrolState extends OverworldPatrolSpec {
   routeIndex: number;
@@ -39,6 +53,8 @@ export interface MoveStepResult {
   cost: number;
   villageVisited: OverworldVillageSpec | null;
   firstVillageVisit: boolean;
+  poiDiscovered: OverworldPoiSpec | null;
+  worldEvent: OverworldWorldEvent | null;
   encounter: OverworldEncounter | null;
 }
 
@@ -55,11 +71,19 @@ export class OverworldManager {
 
   public visitedVillages: Set<string> = new Set();
   public clearedEncounters: Set<string> = new Set();
+  public collectedPois: Set<string> = new Set();
   public patrols: ActivePatrolState[] = [];
+  public activeWorldEvents: ActiveWorldEventNode[] = [];
   public reachable: ReachableHex[] = [];
   public pendingEncounter: OverworldEncounter | null = null;
+  public pendingPoi: OverworldPoiSpec | null = null;
+  public pendingWorldEvent: OverworldWorldEvent | null = null;
+  public worldEventMeter: number = 0;
+  public worldEventCooldown: number = 3;
+  public triggeredEventHexesToday: Set<string> = new Set();
   public lastSafeHex: HexCoord;
   public eventLog: string[] = [];
+  private rng: () => number;
 
   constructor(initial?: {
     heroX?: number;
@@ -68,7 +92,12 @@ export class OverworldManager {
     movetype?: WesnothMovetypeId;
     visitedVillages?: string[];
     clearedEncounters?: string[];
+    collectedPois?: string[];
+    activeWorldEvents?: ActiveWorldEventNode[];
+    worldEventCooldown?: number;
+    rng?: () => number;
   }) {
+    this.rng = initial?.rng ?? Math.random;
     this.map = parseWesnothMap(VALEN_WESNOTH_MAP_TEXT);
     const startKeep = this.map.startingPositions.get(1) ?? { x: 2, y: 3 };
 
@@ -79,6 +108,7 @@ export class OverworldManager {
     this.movetype = initial?.movetype ?? 'smallfoot';
     this.maxMp = WESNOTH_MOVETYPES[this.movetype].maxMp;
     this.currentMp = this.maxMp;
+    this.worldEventCooldown = initial?.worldEventCooldown ?? 3;
 
     if (initial?.visitedVillages) {
       initial.visitedVillages.forEach(v => this.visitedVillages.add(v));
@@ -86,14 +116,50 @@ export class OverworldManager {
     if (initial?.clearedEncounters) {
       initial.clearedEncounters.forEach(c => this.clearedEncounters.add(c));
     }
+    if (initial?.collectedPois) {
+      initial.collectedPois.forEach(p => this.collectedPois.add(p));
+    }
 
     this.patrols = INITIAL_OVERWORLD_PATROLS.filter(p => !this.clearedEncounters.has(p.id)).map(p => ({
       ...p,
       routeIndex: 0
     }));
 
+    if (initial?.activeWorldEvents) {
+      this.activeWorldEvents = initial.activeWorldEvents.map(ev => ({ ...ev }));
+    } else {
+      this.activeWorldEvents = this.buildDailyWorldEvents();
+    }
+
     this.recomputeReachable();
     this.log(`Arrived at Valen Royal Keep (${this.heroX}, ${this.heroY}).`);
+  }
+
+  private getOccupiedEventKeys(): Set<string> {
+    const keys = new Set<string>();
+    OVERWORLD_VILLAGES.forEach(v => keys.add(`${v.x},${v.y}`));
+    this.getActivePois().forEach(p => keys.add(`${p.x},${p.y}`));
+    this.patrols.forEach(p => keys.add(`${p.x},${p.y}`));
+    keys.add(`${this.heroX},${this.heroY}`);
+    return keys;
+  }
+
+  private buildDailyWorldEvents(): ActiveWorldEventNode[] {
+    return spawnDailyWorldEvents(
+      this.map,
+      this.day,
+      this.getOccupiedEventKeys(),
+      { x: this.heroX, y: this.heroY },
+      this.rng
+    );
+  }
+
+  public getQuestProgress(): OverworldQuestProgress {
+    return computeOverworldQuestProgress(this.visitedVillages, this.clearedEncounters, this.patrols.length);
+  }
+
+  public getActivePois(): OverworldPoiSpec[] {
+    return OVERWORLD_POIS.filter(p => !this.collectedPois.has(p.id));
   }
 
   public log(msg: string) {
@@ -103,6 +169,12 @@ export class OverworldManager {
 
   public getCurrentTile(): WesnothHexTile | null {
     return getHexTile(this.map, this.heroX, this.heroY);
+  }
+
+  public getCurrentRegion(): string {
+    const tile = this.getCurrentTile();
+    if (!tile) return 'Valen Heartland';
+    return getOverworldRegion(this.heroX, this.heroY, tile.terrain);
   }
 
   public setMovetype(mt: WesnothMovetypeId) {
@@ -145,34 +217,67 @@ export class OverworldManager {
 
   public getTileInspectInfo(x: number, y: number): {
     tile: WesnothHexTile;
+    regionName: string;
     moveCost: number;
     defensePct: number;
     patrol: ActivePatrolState | null;
     village: OverworldVillageSpec | null;
+    poi: OverworldPoiSpec | null;
+    worldEventNode: ActiveWorldEventNode | null;
   } | null {
     const tile = getHexTile(this.map, x, y);
     if (!tile) return null;
+    const regionName = getOverworldRegion(x, y, tile.terrain);
     const moveCost = getWesnothMovementCost(tile.terrain, this.movetype);
     const defensePct = getWesnothDefensePct(tile.terrain, this.movetype);
     const patrol = this.patrols.find(p => p.x === x && p.y === y) ?? null;
     const village = OVERWORLD_VILLAGES.find(v => v.x === x && v.y === y) ?? null;
-    return { tile, moveCost, defensePct, patrol, village };
+    const poi = OVERWORLD_POIS.find(p => p.x === x && p.y === y && !this.collectedPois.has(p.id)) ?? null;
+    const worldEventNode = this.activeWorldEvents.find(e => e.x === x && e.y === y) ?? null;
+    return { tile, regionName, moveCost, defensePct, patrol, village, poi, worldEventNode };
   }
 
   /**
    * Moves the hero along a reachable Wesnoth hex path (or single adjacent step).
    */
   public moveToHex(goalX: number, goalY: number): MoveStepResult {
-    if (this.pendingEncounter) {
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+    if (this.pendingEncounter || this.pendingPoi || this.pendingWorldEvent) {
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
     if (goalX === this.heroX && goalY === this.heroY) {
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
 
     const targetReach = this.reachable.find(r => r.x === goalX && r.y === goalY);
     if (!targetReach || targetReach.path.length < 2) {
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
 
     return this.applyPathMove(targetReach.path);
@@ -182,16 +287,46 @@ export class OverworldManager {
    * Moves 1 step in a direction (for WASD/Arrow exploration), automatically resting for next day if MP=0 and tile is adjacent.
    */
   public stepByDirection(dx: number, dy: number): MoveStepResult {
+    if (this.pendingEncounter || this.pendingPoi || this.pendingWorldEvent) {
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
+    }
     const targetX = this.heroX + dx;
     const targetY = this.heroY + dy;
     const tile = getHexTile(this.map, targetX, targetY);
     if (!tile) {
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
     const stepCost = getWesnothMovementCost(tile.terrain, this.movetype);
     if (stepCost >= 99) {
       this.log(`${tile.terrain.name} is impassable for ${WESNOTH_MOVETYPES[this.movetype].name}.`);
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
 
     if (this.currentMp < stepCost) {
@@ -201,7 +336,16 @@ export class OverworldManager {
 
     const direct = findHexPath(this.map, this.heroX, this.heroY, targetX, targetY, this.movetype);
     if (!direct || direct.totalCost > this.currentMp) {
-      return { moved: false, path: [], cost: 0, villageVisited: null, firstVillageVisit: false, encounter: null };
+      return {
+        moved: false,
+        path: [],
+        cost: 0,
+        villageVisited: null,
+        firstVillageVisit: false,
+        poiDiscovered: null,
+        worldEvent: null,
+        encounter: null
+      };
     }
     return this.applyPathMove(direct.path);
   }
@@ -210,6 +354,8 @@ export class OverworldManager {
     let totalCost = 0;
     let villageVisited: OverworldVillageSpec | null = null;
     let firstVillageVisit = false;
+    let poiDiscovered: OverworldPoiSpec | null = null;
+    let worldEvent: OverworldWorldEvent | null = null;
     let encounter: OverworldEncounter | null = null;
     const traversedPath: HexCoord[] = [path[0]];
 
@@ -257,22 +403,74 @@ export class OverworldManager {
         } else {
           this.log(`Rested at ${vil.name}; squad healed.`);
         }
-      } else if (tile.terrain.encounterChance <= 0.03) {
-        // Roads & castles are safe
-        this.ambushMeter = Math.max(0, this.ambushMeter - 15);
-      } else {
-        this.ambushMeter += Math.round(tile.terrain.encounterChance * 100);
-        if (this.ambushMeter >= 100) {
-          this.ambushMeter = 0;
-          const ambushSpec = this.createWildAmbushSpec(tile, step.x, step.y);
-          encounter = {
-            patrol: ambushSpec,
-            tile,
-            reason: 'ambush'
-          };
-          this.pendingEncounter = encounter;
-          this.log(`Wild ambush in ${tile.terrain.name} (${step.x}, ${step.y})!`);
-          break;
+      }
+
+      // Check POI (Recruit, Wayshrine, or Supply Cache)
+      const poi = OVERWORLD_POIS.find(p => p.x === step.x && p.y === step.y && !this.collectedPois.has(p.id));
+      if (poi) {
+        this.collectedPois.add(poi.id);
+        poiDiscovered = poi;
+        this.pendingPoi = poi;
+        this.ambushMeter = 0;
+        this.log(`Discovered ${poi.name}!`);
+        break;
+      }
+
+      // Check visible spawned world event node on this hex
+      const activeEvIdx = this.activeWorldEvents.findIndex(e => e.x === step.x && e.y === step.y);
+      if (activeEvIdx >= 0) {
+        const node = this.activeWorldEvents[activeEvIdx];
+        this.activeWorldEvents.splice(activeEvIdx, 1);
+        this.triggeredEventHexesToday.add(`${step.x},${step.y}`);
+        worldEvent = buildWorldEventFromTemplate(node.templateId, tile, this.day, this.rng);
+        this.pendingWorldEvent = worldEvent;
+        this.ambushMeter = 0;
+        this.worldEventMeter = 0;
+        this.worldEventCooldown = 4;
+        this.log(`World Event: ${worldEvent.title} at (${step.x}, ${step.y})!`);
+        break;
+      }
+
+      // Check random tile-entry world event on eligible tiles
+      const hexKey = `${step.x},${step.y}`;
+      if (!vil && isTileEligibleForWorldEvent(tile, new Set())) {
+        if (this.worldEventCooldown > 0) {
+          this.worldEventCooldown -= 1;
+        } else if (!this.triggeredEventHexesToday.has(hexKey)) {
+          const { chance, meterGain } = getTileWorldEventChance(tile.terrain);
+          this.worldEventMeter += meterGain;
+          if (this.rng() < chance || this.worldEventMeter >= 100) {
+            this.worldEventMeter = 0;
+            this.worldEventCooldown = 4;
+            this.triggeredEventHexesToday.add(hexKey);
+            const tpl = pickTemplateForTile(tile, this.rng);
+            worldEvent = buildWorldEventFromTemplate(tpl, tile, this.day, this.rng);
+            this.pendingWorldEvent = worldEvent;
+            this.ambushMeter = 0;
+            this.log(`World Event: ${worldEvent.title} at (${step.x}, ${step.y})!`);
+            break;
+          }
+        }
+      }
+
+      if (!vil) {
+        if (tile.terrain.encounterChance <= 0.03) {
+          // Roads & castles are safe
+          this.ambushMeter = Math.max(0, this.ambushMeter - 15);
+        } else {
+          this.ambushMeter += Math.round(tile.terrain.encounterChance * 100);
+          if (this.ambushMeter >= 100) {
+            this.ambushMeter = 0;
+            const ambushSpec = this.createWildAmbushSpec(tile, step.x, step.y);
+            encounter = {
+              patrol: ambushSpec,
+              tile,
+              reason: 'ambush'
+            };
+            this.pendingEncounter = encounter;
+            this.log(`Wild ambush in ${tile.terrain.name} (${step.x}, ${step.y})!`);
+            break;
+          }
         }
       }
     }
@@ -286,44 +484,81 @@ export class OverworldManager {
       cost: totalCost,
       villageVisited,
       firstVillageVisit,
+      poiDiscovered,
+      worldEvent,
       encounter
     };
   }
 
   private createWildAmbushSpec(tile: WesnothHexTile, x: number, y: number): OverworldPatrolSpec {
     const isSwamp = tile.terrain.baseCategory === 'swamp_water';
+    const isSnow = tile.terrain.baseCategory === 'snow';
+    const isVolcanic = tile.terrain.baseCategory === 'volcanic';
+    const isSand = tile.terrain.baseCategory === 'sand';
     const isForest = tile.terrain.overlayCategory === 'forest';
+    const region = getOverworldRegion(x, y, tile.terrain);
+
     return {
       id: `ambush_${this.day}_${x}_${y}`,
-      name: isSwamp ? 'Mire Ambushers' : isForest ? 'Shadowwood Raiders' : 'Borderland Marauders',
-      subtitle: `${tile.terrain.name} Skirmish`,
-      spriteAsset: isSwamp ? 'skeleton_idle' : isForest ? 'orc_archer' : 'orc_warrior',
+      name: isSwamp
+        ? 'Mire Ambushers'
+        : isSnow
+          ? 'Frostpeak Stalkers'
+          : isVolcanic
+            ? 'Caldera Zealots'
+            : isSand
+              ? 'Sunfire Brigands'
+              : isForest
+                ? 'Shadowwood Raiders'
+                : 'Borderland Marauders',
+      subtitle: `${region} · ${tile.terrain.name}`,
+      spriteAsset: isSwamp
+        ? 'skeleton_idle'
+        : isVolcanic
+          ? 'undead_deathknight'
+          : isForest || isSand
+            ? 'orc_archer'
+            : 'orc_warrior',
       x,
       y,
       patrolRoute: [{ x, y }],
       isBoss: false,
-      difficulty: 1,
-      rewardGold: 130,
-      rewardExp: 85,
-      rewardJp: 45,
+      difficulty: isVolcanic || isSnow || isSand ? 2 : 1,
+      rewardGold: isVolcanic ? 210 : isSnow || isSand ? 175 : 130,
+      rewardExp: isVolcanic ? 140 : isSnow || isSand ? 115 : 85,
+      rewardJp: isVolcanic ? 65 : isSnow || isSand ? 55 : 45,
       enemies: isSwamp
         ? [
             { jobId: 'arcanist', level: 1, name: 'Bog Acolyte', aiRole: 'mage' },
             { jobId: 'guard', level: 1, name: 'Sunken Guard', aiRole: 'defender' }
           ]
-        : [
-            { jobId: 'explorador', level: 1, name: 'Wild Skirmisher', aiRole: 'melee' },
-            { jobId: 'tirador', level: 1, name: 'Grove Marksman', aiRole: 'ranged' }
-          ]
+        : isVolcanic
+          ? [
+              { jobId: 'arcanist', level: 3, name: 'Caldera Pyromancer', aiRole: 'mage' },
+              { jobId: 'duelist', level: 2, name: 'Ashen Zealot', aiRole: 'melee' }
+            ]
+          : isSnow || isSand
+            ? [
+                { jobId: 'explorador', level: 2, name: isSnow ? 'Frost Stalker' : 'Dune Raider', aiRole: 'melee' },
+                { jobId: 'tirador', level: 2, name: isSnow ? 'Glacier Marksman' : 'Sand Marksman', aiRole: 'ranged' }
+              ]
+            : [
+                { jobId: 'explorador', level: 1, name: 'Wild Skirmisher', aiRole: 'melee' },
+                { jobId: 'tirador', level: 1, name: 'Grove Marksman', aiRole: 'ranged' }
+              ]
     };
   }
 
   /**
-   * Ends current overworld day: restores Wesnoth MP and advances roaming patrols along their routes.
+   * Ends current overworld day: restores Wesnoth MP, rotates active world events, and advances roaming patrols.
    */
   public endDay(): { encounter: OverworldEncounter | null } {
     this.day += 1;
     this.currentMp = this.maxMp;
+    this.triggeredEventHexesToday.clear();
+    if (this.worldEventCooldown > 1) {
+      this.worldEventCooldown = 1;
+    }
 
     let encounter: OverworldEncounter | null = null;
 
@@ -344,9 +579,14 @@ export class OverworldManager {
       }
     }
 
+    this.activeWorldEvents = this.buildDailyWorldEvents();
     this.recomputeReachable();
-    this.log(`Day ${this.day} begins — ${this.currentMp} MP restored.`);
+    this.log(`Day ${this.day} begins — ${this.currentMp} MP restored; new caravans & caches sighted.`);
     return { encounter };
+  }
+
+  public dismissPendingWorldEvent() {
+    this.pendingWorldEvent = null;
   }
 
   public resolveEncounterVictory(patrolId: string) {

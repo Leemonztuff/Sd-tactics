@@ -33,10 +33,13 @@ export type JobId =
   | 'alquimista'
   | 'invocador';
 
+export type BattleBiome = 'lowlands' | 'ruins' | 'caldera';
+
 export type StatusType =
   | 'haste'
   | 'slow'
   | 'poison'
+  | 'burn'
   | 'fortify'
   | 'aether_shield'
   | 'evade'
@@ -105,8 +108,8 @@ export interface AbilityDefinition {
 export interface ItemDefinition {
   id: string;
   name: string;
-  type: 'weapon' | 'armor' | 'accessory';
-  slot: 'weapon' | 'armor' | 'accessory';
+  type: 'weapon' | 'armor' | 'accessory' | 'consumable';
+  slot: 'weapon' | 'armor' | 'accessory' | 'consumable';
   price: number;
   allowedJobs?: JobId[];
   stats: {
@@ -121,6 +124,15 @@ export interface ItemDefinition {
     mp?: number;
     mov?: number;
     jmp?: number;
+  };
+  consumableEffect?: {
+    targetType: 'ally' | 'enemy';
+    range: number;
+    aoeRadius: number;
+    healHp?: number;
+    healMp?: number;
+    damage?: number;
+    cureStatuses?: boolean;
   };
   description: string;
 }
@@ -200,6 +212,7 @@ export interface MissionData {
   }[];
   objectiveType: 'defeat_all' | 'defeat_leader' | 'survive';
   surviveTurns?: number;
+  parTurns?: number;
   victoryCondition: string;
   defeatCondition: string;
   rewardExp: number;
@@ -214,6 +227,17 @@ export interface OverworldSaveState {
   movetype: 'smallfoot' | 'mounted' | 'woodland' | 'orcishfoot';
   visitedVillages: string[];
   clearedEncounters: string[];
+  collectedPois?: string[];
+  activeWorldEvents?: {
+    id: string;
+    templateId: string;
+    category: 'merchant' | 'supply_cache' | 'wayfarer' | 'omen';
+    title: string;
+    subtitle: string;
+    x: number;
+    y: number;
+  }[];
+  worldEventCooldown?: number;
 }
 
 export interface SaveData {
@@ -222,9 +246,12 @@ export interface SaveData {
   day: number;
   currentMissionIndex: number;
   roster: EntityData[];
+  activeSquadIds?: string[];
   inventory: { itemId: string; count: number }[];
   completedMissions: string[];
+  missionStars?: Record<string, number>;
   overworld?: OverworldSaveState;
+  qualityTier?: 'eco' | 'balanced' | 'high';
 }
 
 export type BattlePhase =
@@ -233,6 +260,7 @@ export type BattlePhase =
   | 'move_select'
   | 'moving'
   | 'action_select'
+  | 'bag_select'
   | 'target_select'
   | 'resolving'
   | 'facing_select'
