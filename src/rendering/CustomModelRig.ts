@@ -686,6 +686,31 @@ export function normalizeModelGeometry(rawMesh: THREE.Mesh): THREE.BufferGeometr
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   }
 
+  // Generate rich anatomical vertex colors matching reference image (brown hair, warm skin, tan leather, red sash, brown boots)
+  const colors = new Float32Array(count * 3);
+  const colBoot = new THREE.Color(0x4a3728);
+  const colPants = new THREE.Color(0x5c4033);
+  const colSash = new THREE.Color(0xc0392b);
+  const colLeather = new THREE.Color(0xbf9b7a);
+  const colSkin = new THREE.Color(0xecb394);
+  const colHair = new THREE.Color(0x7a6558);
+
+  for (let i = 0; i < count; i++) {
+    const y = posAttr.getY(i);
+    let c = colLeather;
+    if (y < 0.22) c = colBoot;
+    else if (y < 0.44) c = colPants;
+    else if (y < 0.50) c = colSash;
+    else if (y < 0.76) c = colLeather;
+    else if (y < 0.88) c = colSkin;
+    else c = colHair;
+
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
   applyAnatomicalSkinWeights(geo);
   return geo;
 }
@@ -722,17 +747,18 @@ export async function loadBaseModelGeometry(url: string = '/models/model01.glb')
         const normGeo = normalizeModelGeometry(mesh);
         cachedBaseGeometry = normGeo;
 
-        // Cache texture if present
-        if (mesh.material && (mesh.material as THREE.MeshStandardMaterial).map) {
-          cachedTexture = (mesh.material as THREE.MeshStandardMaterial).map;
-        } else {
-          // Load texture webp
-          const texLoader = new THREE.TextureLoader();
+        // Load user uploaded texture png
+        const texLoader = new THREE.TextureLoader();
+        texLoader.load('/models/model01_texture.png', tex => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          cachedTexture = tex;
+        }, undefined, () => {
+          // Fallback to webp if png fails
           texLoader.load('/models/model01_texture.webp', tex => {
             tex.colorSpace = THREE.SRGBColorSpace;
             cachedTexture = tex;
           });
-        }
+        });
 
         resolve(normGeo);
       },
@@ -768,15 +794,17 @@ export async function createRiggedModelInstance(
 
   // Brawl Stars stylized Toon material
   const toonMat = new THREE.MeshToonMaterial({
-    color: primaryHex,
-    gradientMap
+    color: 0xffffff,
+    gradientMap,
+    vertexColors: true
   });
 
-  // Textured material (PBR with embedded/external webp texture)
+  // Textured material
   const texturedMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.45,
     metalness: 0.1,
+    vertexColors: true,
     map: cachedTexture
   });
 
