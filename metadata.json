@@ -1,0 +1,6 @@
+{
+  "name": "Valen Tactics - Tactical RPG",
+  "description": "An original 3D Tactical RPG with Three.js featuring CT turn system, height/elevation maps, class progression, and rich tactical combat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
