@@ -18,7 +18,18 @@ import {
   resolveBattleBiome
 } from './BattleDioramaBuilder';
 import { BattleVfxSystem, SkillCastVfxParams } from './BattleVfxSystem';
-import { CustomRigController, createRiggedModelInstance } from './CustomModelRig';
+import {
+  CustomRigController,
+  createRiggedModelInstance,
+  detectModelFormat,
+  importRiggedModelFromBuffer,
+  loadTextureFromBuffer
+} from './CustomModelRig';
+import {
+  ResolvedEntityModel,
+  initCustomModelLibrary,
+  resolveCustomModelForEntity
+} from './CustomModelLibrary';
 
 const _vec3A = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
@@ -37,6 +48,8 @@ interface UnitVisualState {
   isDying: boolean;
   deathTimer: number;
   customRig?: CustomRigController;
+  customModelSignature?: string;
+  loadingModelSignature?: string;
 }
 
 export class SceneManager {
@@ -499,7 +512,124 @@ export class SceneManager {
     }
   }
 
+  private setProceduralBodyVisible(actorBody: THREE.Group, visible: boolean) {
+    actorBody.traverse(obj => {
+      if (obj !== actorBody && (obj as THREE.Mesh).isMesh) {
+        const m = obj as THREE.Mesh;
+        if (m.userData?.isCustomRigPart) return;
+        if (
+          m.geometry?.type !== 'RingGeometry' &&
+          m.geometry?.type !== 'ConeGeometry' &&
+          m.geometry?.type !== 'CircleGeometry'
+        ) {
+          m.visible = visible;
+        }
+      }
+    });
+  }
+
+  private async loadResolvedRig(
+    resolved: ResolvedEntityModel,
+    isPlayer: boolean
+  ): Promise<CustomRigController> {
+    const outlinesEnabled = resolved.config.outlinesEnabled && this.qualityPreset.outlinesEnabled;
+    if (resolved.source === 'default_glb') {
+      return createRiggedModelInstance(isPlayer, outlinesEnabled, resolved.url, {
+        config: { ...resolved.config, outlinesEnabled }
+      });
+    }
+
+    const buffer = resolved.source === 'library' ? resolved.entry.buffer : resolved.buffer;
+    const fileName = resolved.source === 'library' ? resolved.entry.fileName : resolved.fileName;
+    const companions = resolved.source === 'library' ? resolved.entry.companions : resolved.companions;
+    const texBuf = resolved.source === 'library' ? resolved.entry.textureBuffer : resolved.textureBuffer;
+
+    const controller = await importRiggedModelFromBuffer(buffer, {
+      isPlayer,
+      outlinesEnabled,
+      modelName: fileName,
+      companionFiles: companions,
+      config: { ...resolved.config, outlinesEnabled }
+    });
+
+    if (texBuf && typeof URL !== 'undefined' && typeof Image !== 'undefined') {
+      try {
+        const fmt = detectModelFormat(buffer, fileName);
+        const tex = await loadTextureFromBuffer(texBuf, fmt === 'obj' || fmt === 'fbx');
+        controller.applyCustomTexture(tex);
+        controller.applyDisplayConfig({ ...resolved.config, outlinesEnabled });
+      } catch {
+        // Ignore invalid override texture
+      }
+    }
+    return controller;
+  }
+
+  private attachOrRefreshCustomRig(entity: EntityData, visState: UnitVisualState) {
+    const resolved = resolveCustomModelForEntity(entity);
+    if (!resolved) {
+      if (visState.customRig) {
+        visState.actorBody.remove(visState.customRig.group);
+        visState.customRig.dispose();
+        visState.customRig = undefined;
+      }
+      visState.customModelSignature = undefined;
+      visState.loadingModelSignature = undefined;
+      this.setProceduralBodyVisible(visState.actorBody, true);
+      return;
+    }
+
+    if (
+      visState.customModelSignature === resolved.signature ||
+      visState.loadingModelSignature === resolved.signature
+    ) {
+      return;
+    }
+
+    visState.loadingModelSignature = resolved.signature;
+    this.loadResolvedRig(resolved, entity.faction === 'player')
+      .then(rig => {
+        if (
+          this.entityVisuals.get(entity.id) === visState &&
+          !visState.isDying &&
+          visState.loadingModelSignature === resolved.signature
+        ) {
+          if (visState.customRig) {
+            visState.actorBody.remove(visState.customRig.group);
+            visState.customRig.dispose();
+          }
+          rig.group.traverse(obj => {
+            obj.userData.isCustomRigPart = true;
+          });
+          this.setProceduralBodyVisible(visState.actorBody, false);
+          visState.actorBody.add(rig.group);
+          visState.customRig = rig;
+          visState.customModelSignature = resolved.signature;
+          visState.loadingModelSignature = undefined;
+        } else {
+          rig.dispose();
+        }
+      })
+      .catch(err => {
+        console.warn(`Could not load custom rig for ${entity.name}, fallback to procedural mesh`, err);
+        if (visState.loadingModelSignature === resolved.signature) {
+          visState.loadingModelSignature = undefined;
+        }
+      });
+  }
+
   public syncEntities(entities: EntityData[]) {
+    void initCustomModelLibrary().then(() => {
+      if (this.disposed) return;
+      for (const entity of entities) {
+        if (!entity.isAlive) continue;
+        const vis = this.entityVisuals.get(entity.id);
+        if (vis && !vis.isDying) {
+          this.attachOrRefreshCustomRig(entity, vis);
+        }
+      }
+    });
+
     const seen = new Set<string>();
 
     for (const entity of entities) {
@@ -555,35 +685,7 @@ export class SceneManager {
           deathTimer: 0
         };
         this.entityVisuals.set(entity.id, visState);
-
-        // Squad leader hero (Valerius / hero_1) utilizes the custom rigged model01
-        if (entity.id === 'hero_1' || entity.name === 'Valerius') {
-          createRiggedModelInstance(entity.faction === 'player', this.qualityPreset.outlinesEnabled)
-            .then(rig => {
-              if (this.entityVisuals.get(entity.id) === visState && !visState.isDying) {
-                // Hide procedural body meshes while keeping contact shadow and ring
-                actorBody.traverse(obj => {
-                  if (obj !== actorBody && (obj as THREE.Mesh).isMesh) {
-                    const m = obj as THREE.Mesh;
-                    if (
-                      m.geometry?.type !== 'RingGeometry' &&
-                      m.geometry?.type !== 'ConeGeometry' &&
-                      m.geometry?.type !== 'CircleGeometry'
-                    ) {
-                      m.visible = false;
-                    }
-                  }
-                });
-                actorBody.add(rig.group);
-                visState.customRig = rig;
-              } else {
-                rig.dispose();
-              }
-            })
-            .catch(err => {
-              console.warn('Could not load custom rig for unit, fallback to procedural mesh', err);
-            });
-        }
+        this.attachOrRefreshCustomRig(entity, visState);
       } else {
         existing.targetPos.set(entity.x, topY, entity.z);
         existing.targetYaw = directionToYaw(entity.facing);
@@ -593,6 +695,7 @@ export class SceneManager {
         } else {
           existing.statusHalo.visible = false;
         }
+        this.attachOrRefreshCustomRig(entity, existing);
       }
     }
 

@@ -807,7 +807,12 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
 
       <ModelViewerModal
         isOpen={showModelTester}
-        onClose={() => setShowModelTester(false)}
+        onClose={() => {
+          setShowModelTester(false);
+          if (game.sceneManager && game.entityManager) {
+            game.sceneManager.syncEntities(game.entityManager.getAllEntities());
+          }
+        }}
       />
     </div>
   );
