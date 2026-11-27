@@ -1537,7 +1537,7 @@ function detectRestArmDropAngle(
  */
 export function createRigAnimationClips(
   bonesMap?: Record<string, THREE.Bone>,
-  _layout?: HumanoidSkeletonLayout,
+  layout?: HumanoidSkeletonLayout,
   armDropOffsetRad: number = 0
 ): RigAnimationClips {
   const b = bonesMap ?? {};
@@ -1562,7 +1562,16 @@ export function createRigAnimationClips(
 
   // How much to drop the arms down from horizontal T-pose / A-pose into a natural ready stance
   const isAutoRig = Boolean(b.headTop && b.leftFoot);
-  const baseDrop = useBoneRefs ? detectRestArmDropAngle(b, worldPositions) : 0.85;
+  const detectedDrop = useBoneRefs ? detectRestArmDropAngle(b, worldPositions) : 0.85;
+  const armPoseDrop =
+    layout?.armPose === 't-pose'
+      ? 1.15
+      : layout?.armPose === 'a-pose'
+        ? 0.92
+        : layout?.armPose === 'relaxed'
+          ? 0.55
+          : detectedDrop;
+  const baseDrop = layout ? armPoseDrop : detectedDrop;
   const dropTotal = clamp(baseDrop + armDropOffsetRad, 0, 1.25);
   // In our 18-bone auto-rig, leftShoulder/rightShoulder sit at the shoulder socket and leftArm/rightArm at the elbow.
   // In native Mixamo/Blender rigs, leftShoulder is a short clavicle and leftArm is the shoulder socket.
@@ -2644,8 +2653,11 @@ function matchEmbeddedAnimations(
       return patterns.some(p => p.test(n));
     });
 
+  const restPoseClip = /t[ _-]?pose|bind[ _-]?pose|rest[ _-]?pose|reference[ _-]?pose|apose|a[ _-]?pose/i;
   const idleClip =
-    findClip([/idle/, /stand/, /breath/, /wait/, /rest/]) ?? clips[0];
+    findClip([/idle/, /stand/, /breath/, /wait/, /rest/], restPoseClip) ??
+    findClip([/.*/], restPoseClip) ??
+    fallbackClips.idle;
   const walkClip =
     findClip([/walk/, /run/, /move/, /stride/, /jog/, /locomotion/]);
   const attackClip =
