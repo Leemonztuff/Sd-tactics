@@ -957,10 +957,10 @@ export function analyzeHumanoidGeometry(
   }
   const elbowY = clamp(medianOf(midArmYs, lerp(shoulderY, armEndY, 0.5)), 0.38, 0.79);
 
-  const shoulderX = clamp(torsoRadiusX * 0.98, 0.08, 0.18);
+  const shoulderX = clamp(torsoRadiusX * 0.62, 0.05, 0.13);
   const baseArmEndX = clamp(armMaxX * 0.94, torsoRadiusX * 1.45, 0.52);
   const armEndX = clamp(baseArmEndX * (config?.armSpanScale ?? 1.0), torsoRadiusX * 1.35, 0.62);
-  const elbowX = lerp(shoulderX, armEndX, 0.50);
+  const elbowX = lerp(shoulderX, armEndX, 0.48);
 
   const armEndZ = clamp(medianOf(outerArmZs, coreCenterZ), -0.18, 0.18);
   const elbowZ = clamp(medianOf(midArmZs, armEndZ), -0.18, 0.18);
