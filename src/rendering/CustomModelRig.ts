@@ -21,6 +21,38 @@ export type CustomMaterialMode = 'toon' | 'textured';
 
 export type ProportionClass = 'chibi' | 'balanced' | 'tall_humanoid';
 export type ArmPoseClass = 't-pose' | 'a-pose' | 'relaxed';
+export type HumanoidLandmarkName =
+  | 'pelvis'
+  | 'chest'
+  | 'neck'
+  | 'leftShoulder'
+  | 'leftElbow'
+  | 'leftWrist'
+  | 'leftHip'
+  | 'leftKnee'
+  | 'leftAnkle';
+
+export interface RigLandmarkPosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export type ManualRigLandmarks = Partial<Record<HumanoidLandmarkName, RigLandmarkPosition>>;
+
+export interface ManualSkinWeightInfluence {
+  boneName: string;
+  weight: number;
+}
+
+export interface ManualSkinWeightEdit {
+  meshIndex: number;
+  meshName: string;
+  vertexIndex: number;
+  influences: ManualSkinWeightInfluence[];
+}
+
+export type SkinWeightPaintMode = 'paint' | 'erase' | 'smooth';
 
 export interface AutoRigProfile {
   proportionClass: ProportionClass;
@@ -46,6 +78,8 @@ export interface CustomModelConfig {
   neckHeightOffset: number;
   armDropOffsetRad: number;
   armSpanScale: number;
+  manualLandmarks: ManualRigLandmarks;
+  manualWeightEdits: ManualSkinWeightEdit[];
   isolateBackAppendages: boolean;
   materialMode: CustomMaterialMode;
   weaponsEnabled: boolean;
@@ -62,6 +96,8 @@ export const DEFAULT_CUSTOM_MODEL_CONFIG: CustomModelConfig = {
   neckHeightOffset: 0,
   armDropOffsetRad: 0,
   armSpanScale: 1.0,
+  manualLandmarks: {},
+  manualWeightEdits: [],
   isolateBackAppendages: true,
   materialMode: 'toon',
   weaponsEnabled: true,
@@ -73,6 +109,94 @@ export function normalizeCustomModelConfig(
   raw?: Partial<CustomModelConfig> | null
 ): CustomModelConfig {
   const c = raw ?? {};
+  const manualLandmarks: ManualRigLandmarks = {};
+  if (c.manualLandmarks && typeof c.manualLandmarks === 'object') {
+    const landmarkNames: HumanoidLandmarkName[] = [
+      'pelvis',
+      'chest',
+      'neck',
+      'leftShoulder',
+      'leftElbow',
+      'leftWrist',
+      'leftHip',
+      'leftKnee',
+      'leftAnkle'
+    ];
+    for (const name of landmarkNames) {
+      const point = c.manualLandmarks[name];
+      if (
+        point &&
+        Number.isFinite(point.x) &&
+        Number.isFinite(point.y) &&
+        Number.isFinite(point.z)
+      ) {
+        manualLandmarks[name] = {
+          x: clamp(point.x, -0.7, 0.7),
+          y: clamp(point.y, 0, 1.1),
+          z: clamp(point.z, -0.4, 0.4)
+        };
+      }
+    }
+  }
+  const manualWeightEdits: ManualSkinWeightEdit[] = [];
+  if (Array.isArray(c.manualWeightEdits)) {
+    const seenVertices = new Set<string>();
+    for (const edit of c.manualWeightEdits) {
+      if (
+        !edit ||
+        !Number.isInteger(edit.meshIndex) ||
+        edit.meshIndex < 0 ||
+        typeof edit.meshName !== 'string' ||
+        !Number.isInteger(edit.vertexIndex) ||
+        edit.vertexIndex < 0 ||
+        !Array.isArray(edit.influences)
+      ) {
+        continue;
+      }
+
+      const mergedInfluences = new Map<string, number>();
+      for (const influence of edit.influences) {
+        if (
+          influence &&
+          typeof influence.boneName === 'string' &&
+          influence.boneName.length > 0 &&
+          Number.isFinite(influence.weight) &&
+          influence.weight > 0
+        ) {
+          mergedInfluences.set(
+            influence.boneName,
+            (mergedInfluences.get(influence.boneName) ?? 0) + influence.weight
+          );
+        }
+      }
+      const influences = Array.from(mergedInfluences, ([boneName, weight]) => ({ boneName, weight }))
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 4);
+      const total = influences.reduce((sum, influence) => sum + influence.weight, 0);
+      if (total <= 0) continue;
+
+      const key = `${edit.meshIndex}:${edit.meshName}:${edit.vertexIndex}`;
+      if (seenVertices.has(key)) {
+        const previousIndex = manualWeightEdits.findIndex(
+          previous =>
+            previous.meshIndex === edit.meshIndex &&
+            previous.meshName === edit.meshName &&
+            previous.vertexIndex === edit.vertexIndex
+        );
+        if (previousIndex >= 0) manualWeightEdits.splice(previousIndex, 1);
+      }
+      seenVertices.add(key);
+      manualWeightEdits.push({
+        meshIndex: edit.meshIndex,
+        meshName: edit.meshName,
+        vertexIndex: edit.vertexIndex,
+        influences: influences.map(influence => ({
+          boneName: influence.boneName,
+          weight: influence.weight / total
+        }))
+      });
+    }
+  }
   return {
     scale: clamp(Number.isFinite(c.scale) ? c.scale! : DEFAULT_CUSTOM_MODEL_CONFIG.scale, 0.4, 2.2),
     facingYawDeg: clamp(
@@ -110,6 +234,8 @@ export function normalizeCustomModelConfig(
       0.7,
       1.4
     ),
+    manualLandmarks,
+    manualWeightEdits,
     isolateBackAppendages:
       typeof c.isolateBackAppendages === 'boolean' ? c.isolateBackAppendages : true,
     materialMode: c.materialMode === 'textured' ? 'textured' : 'toon',
@@ -183,6 +309,137 @@ export interface MeshMaterialEntry {
   texturedMat: THREE.Material | THREE.Material[];
   outlineMesh: THREE.Mesh | null;
   hadNativeColors?: boolean;
+}
+
+function getVertexInfluences(
+  mesh: THREE.SkinnedMesh,
+  vertexIndex: number
+): ManualSkinWeightInfluence[] {
+  const skinIndex = mesh.geometry.attributes.skinIndex;
+  const skinWeight = mesh.geometry.attributes.skinWeight;
+  if (!skinIndex || !skinWeight || !mesh.skeleton) return [];
+
+  const influences = new Map<string, number>();
+  for (let slot = 0; slot < 4; slot++) {
+    const weight = skinWeight.getComponent(vertexIndex, slot);
+    const bone = mesh.skeleton.bones[skinIndex.getComponent(vertexIndex, slot)];
+    if (bone && weight > 0) {
+      influences.set(bone.name, (influences.get(bone.name) ?? 0) + weight);
+    }
+  }
+  return Array.from(influences, ([boneName, weight]) => ({ boneName, weight }));
+}
+
+function writeVertexInfluences(
+  mesh: THREE.SkinnedMesh,
+  vertexIndex: number,
+  influences: ManualSkinWeightInfluence[],
+  boneIndices = new Map(mesh.skeleton.bones.map((bone, index) => [bone.name, index]))
+): boolean {
+  const skinIndex = mesh.geometry.attributes.skinIndex;
+  const skinWeight = mesh.geometry.attributes.skinWeight;
+  if (!skinIndex || !skinWeight || !mesh.skeleton) return false;
+
+  const merged = new Map<number, number>();
+  for (const influence of influences) {
+    const boneIndex = boneIndices.get(influence.boneName);
+    if (boneIndex !== undefined && Number.isFinite(influence.weight) && influence.weight > 0) {
+      merged.set(boneIndex, (merged.get(boneIndex) ?? 0) + influence.weight);
+    }
+  }
+
+  const top = Array.from(merged, ([boneIndex, weight]) => ({ boneIndex, weight }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 4);
+  const total = top.reduce((sum, influence) => sum + influence.weight, 0);
+  if (total <= 0) return false;
+
+  for (let slot = 0; slot < 4; slot++) {
+    const influence = top[slot];
+    skinIndex.setComponent(vertexIndex, slot, influence?.boneIndex ?? 0);
+    skinWeight.setComponent(vertexIndex, slot, influence ? influence.weight / total : 0);
+  }
+  return true;
+}
+
+export function applyManualSkinWeightEdits(
+  meshEntries: MeshMaterialEntry[],
+  edits: ManualSkinWeightEdit[]
+): void {
+  const boneIndicesByMesh = new Map<number, Map<string, number>>();
+  for (const edit of edits) {
+    const entry = meshEntries[edit.meshIndex];
+    const mesh = entry?.mesh as THREE.SkinnedMesh | undefined;
+    const position = mesh?.geometry.attributes.position;
+    if (
+      !mesh?.isSkinnedMesh ||
+      mesh.name !== edit.meshName ||
+      !position ||
+      edit.vertexIndex >= position.count
+    ) {
+      continue;
+    }
+    let boneIndices = boneIndicesByMesh.get(edit.meshIndex);
+    if (!boneIndices) {
+      boneIndices = new Map(mesh.skeleton.bones.map((bone, index) => [bone.name, index]));
+      boneIndicesByMesh.set(edit.meshIndex, boneIndices);
+    }
+    if (!writeVertexInfluences(mesh, edit.vertexIndex, edit.influences, boneIndices)) continue;
+    const outline = entry.outlineMesh as THREE.SkinnedMesh | null;
+    const sourceSkinIndex = mesh.geometry.attributes.skinIndex;
+    const sourceSkinWeight = mesh.geometry.attributes.skinWeight;
+    const outlineSkinIndex = outline?.geometry.attributes.skinIndex;
+    const outlineSkinWeight = outline?.geometry.attributes.skinWeight;
+    if (
+      outline?.isSkinnedMesh &&
+      sourceSkinIndex &&
+      sourceSkinWeight &&
+      outlineSkinIndex &&
+      outlineSkinWeight
+    ) {
+      for (let slot = 0; slot < 4; slot++) {
+        outlineSkinIndex.setComponent(
+          edit.vertexIndex,
+          slot,
+          sourceSkinIndex.getComponent(edit.vertexIndex, slot)
+        );
+        outlineSkinWeight.setComponent(
+          edit.vertexIndex,
+          slot,
+          sourceSkinWeight.getComponent(edit.vertexIndex, slot)
+        );
+      }
+      outlineSkinIndex.needsUpdate = true;
+      outlineSkinWeight.needsUpdate = true;
+    }
+  }
+  for (const entry of meshEntries) {
+    const mesh = entry.mesh as THREE.SkinnedMesh;
+    if (
+      mesh.isSkinnedMesh &&
+      mesh.geometry.attributes.skinIndex &&
+      mesh.geometry.attributes.skinWeight
+    ) {
+      mesh.geometry.attributes.skinIndex.needsUpdate = true;
+      mesh.geometry.attributes.skinWeight.needsUpdate = true;
+    }
+  }
+}
+
+function getOppositeBoneName(boneName: string, names: Set<string>): string | null {
+  const sideMatch = boneName.match(/left|right/i);
+  if (!sideMatch) return null;
+  const opposite = boneName.replace(/left|right/i, sideMatch[0].toLowerCase() === 'left' ? 'right' : 'left');
+  return Array.from(names).find(name => name.toLowerCase() === opposite.toLowerCase()) ?? null;
+}
+
+function weightEditKey(meshIndex: number, meshName: string, vertexIndex: number): string {
+  return `${meshIndex}:${meshName}:${vertexIndex}`;
+}
+
+interface WeightPaintUndoEntry {
+  edit: ManualSkinWeightEdit;
+  hadManualEdit: boolean;
 }
 
 export interface RigInstanceOptions {
@@ -260,6 +517,18 @@ export class CustomRigController {
   private geometriesToDispose: THREE.BufferGeometry[];
   private materialsToDispose: THREE.Material[];
   private texturesToDispose: THREE.Texture[] = [];
+  private weightPreviewOverlays: Array<{
+    mesh: THREE.SkinnedMesh;
+    source: THREE.SkinnedMesh;
+    geometry: THREE.BufferGeometry;
+    material: THREE.MeshBasicMaterial;
+  }> = [];
+  private weightPreviewVisible = false;
+  private boneIndicesByMesh = new Map<number, Map<string, number>>();
+  private manualWeightEditsByVertex = new Map<string, ManualSkinWeightEdit>();
+  private activeWeightStroke = new Map<string, ManualSkinWeightEdit>();
+  private activeWeightStrokeHadEdit = new Map<string, boolean>();
+  private weightUndoStack: WeightPaintUndoEntry[][] = [];
   private attackCallback: (() => void) | null = null;
   private hitCallback: (() => void) | null = null;
 
@@ -322,6 +591,12 @@ export class CustomRigController {
     this.metadata = params.metadata;
     this.geometriesToDispose = params.geometriesToDispose;
     this.materialsToDispose = params.materialsToDispose;
+    for (const edit of this.metadata.appliedConfig.manualWeightEdits) {
+      this.manualWeightEditsByVertex.set(
+        weightEditKey(edit.meshIndex, edit.meshName, edit.vertexIndex),
+        edit
+      );
+    }
 
     this.skeletonHelper = new THREE.SkeletonHelper(params.skeletonRoot);
     this.skeletonHelper.visible = false;
@@ -481,6 +756,392 @@ export class CustomRigController {
     this.skeletonHelper.visible = visible;
   }
 
+  public setWeightPreview(visible: boolean) {
+    this.weightPreviewVisible = visible;
+    if (!visible) {
+      for (const overlay of this.weightPreviewOverlays) {
+        overlay.mesh.removeFromParent();
+        overlay.geometry.dispose();
+        overlay.material.dispose();
+      }
+      this.weightPreviewOverlays = [];
+      return;
+    }
+
+    if (this.weightPreviewOverlays.length > 0) return;
+
+    const armBones = new Set([
+      this.bones.leftShoulder,
+      this.bones.leftArm,
+      this.bones.leftHand,
+      this.bones.rightShoulder,
+      this.bones.rightArm,
+      this.bones.rightHand
+    ].filter((bone): bone is THREE.Bone => Boolean(bone)));
+    const torsoBones = new Set([
+      this.bones.pelvis,
+      this.bones.spine,
+      this.bones.chest
+    ].filter((bone): bone is THREE.Bone => Boolean(bone)));
+
+    for (const entry of this.meshEntries) {
+      const source = entry.mesh;
+      if (!(source as THREE.SkinnedMesh).isSkinnedMesh) continue;
+
+      const skinnedSource = source as THREE.SkinnedMesh;
+      const skinIndex = source.geometry.attributes.skinIndex;
+      const skinWeight = source.geometry.attributes.skinWeight;
+      if (!skinIndex || !skinWeight) continue;
+
+      const geometry = source.geometry.clone();
+      const colors = new Float32Array(skinIndex.count * 3);
+      for (let i = 0; i < skinIndex.count; i++) {
+        let armInfluence = 0;
+        let torsoInfluence = 0;
+        for (let j = 0; j < 4; j++) {
+          const boneIndex = skinIndex.getComponent(i, j);
+          const influence = skinWeight.getComponent(i, j);
+          const bone = skinnedSource.skeleton.bones[boneIndex];
+          if (armBones.has(bone)) armInfluence += influence;
+          if (torsoBones.has(bone)) torsoInfluence += influence;
+        }
+
+        colors[i * 3] = 0.10 + Math.min(1, armInfluence) * 0.88;
+        colors[i * 3 + 1] = 0.12 + Math.min(1, Math.min(armInfluence, torsoInfluence)) * 0.55;
+        colors[i * 3 + 2] = 0.12 + Math.min(1, torsoInfluence) * 0.88;
+      }
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+      const material = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.78,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        side: THREE.DoubleSide
+      });
+      const overlayMesh = new THREE.SkinnedMesh(geometry, material);
+      overlayMesh.name = `${source.name || 'mesh'}_weight_preview`;
+      overlayMesh.frustumCulled = false;
+      overlayMesh.position.copy(source.position);
+      overlayMesh.quaternion.copy(source.quaternion);
+      overlayMesh.scale.copy(source.scale);
+      overlayMesh.bind(skinnedSource.skeleton, skinnedSource.bindMatrix);
+      source.parent?.add(overlayMesh);
+      this.weightPreviewOverlays.push({
+        mesh: overlayMesh,
+        source: skinnedSource,
+        geometry,
+        material
+      });
+    }
+  }
+
+  public beginWeightPaintStroke() {
+    this.activeWeightStroke.clear();
+    this.activeWeightStrokeHadEdit.clear();
+  }
+
+  public paintWeightsAt(
+    worldPoint: THREE.Vector3,
+    selectedBoneName: string,
+    radius: number,
+    strength: number,
+    mode: SkinWeightPaintMode,
+    mirror: boolean
+  ): number {
+    const brushRadius = clamp(radius, 0.01, 0.4);
+    const brushStrength = clamp(strength, 0.01, 1);
+    this.modelRoot.updateMatrixWorld(true);
+    const modelPoint = this.modelRoot.worldToLocal(worldPoint.clone());
+    const editedVerticesByMesh = new Map<number, Set<number>>();
+
+    for (let meshIndex = 0; meshIndex < this.meshEntries.length; meshIndex++) {
+      const mesh = this.meshEntries[meshIndex].mesh as THREE.SkinnedMesh;
+      if (!mesh.isSkinnedMesh || !mesh.skeleton) continue;
+      const position = mesh.geometry.attributes.position;
+      const skinWeight = mesh.geometry.attributes.skinWeight;
+      if (!position || !skinWeight) continue;
+
+      let boneIndices = this.boneIndicesByMesh.get(meshIndex);
+      if (!boneIndices) {
+        boneIndices = new Map(mesh.skeleton.bones.map((bone, index) => [bone.name, index]));
+        this.boneIndicesByMesh.set(meshIndex, boneIndices);
+      }
+
+      const boneNames = new Set(boneIndices.keys());
+      const centers = [{ point: worldPoint.clone(), boneName: selectedBoneName }];
+      const oppositeBone = mirror ? getOppositeBoneName(selectedBoneName, boneNames) : null;
+      if (oppositeBone) {
+        const mirroredModelPoint = modelPoint.clone();
+        mirroredModelPoint.x *= -1;
+        centers.push({
+          point: this.modelRoot.localToWorld(mirroredModelPoint),
+          boneName: oppositeBone
+        });
+      }
+
+      mesh.updateMatrixWorld(true);
+      for (const center of centers) {
+        const targetBoneIndex = boneIndices.get(center.boneName);
+        if (targetBoneIndex === undefined) continue;
+        const targetBone = mesh.skeleton.bones[targetBoneIndex];
+        if (!targetBone) continue;
+
+        const samples: Array<{ vertexIndex: number; falloff: number }> = [];
+        const vertex = new THREE.Vector3();
+        for (let vertexIndex = 0; vertexIndex < position.count; vertexIndex++) {
+          mesh.getVertexPosition(vertexIndex, vertex);
+          mesh.localToWorld(vertex);
+          const distance = vertex.distanceTo(center.point);
+          if (distance < brushRadius) {
+            samples.push({
+              vertexIndex,
+              falloff: 1 - smoothstep(0, brushRadius, distance)
+            });
+          }
+        }
+        if (samples.length === 0) continue;
+
+        const averageInfluence =
+          mode === 'smooth'
+            ? samples.reduce(
+                (sum, sample) =>
+                  sum + (getVertexInfluences(mesh, sample.vertexIndex).find(
+                    influence => influence.boneName === center.boneName
+                  )?.weight ?? 0),
+                0
+              ) / samples.length
+            : 0;
+
+        for (const sample of samples) {
+          const oldInfluences = getVertexInfluences(mesh, sample.vertexIndex);
+          const oldTarget =
+            oldInfluences.find(influence => influence.boneName === center.boneName)?.weight ?? 0;
+          const blend = brushStrength * sample.falloff;
+          const nextTarget =
+            mode === 'paint'
+              ? oldTarget + (1 - oldTarget) * blend
+              : mode === 'erase'
+                ? oldTarget * (1 - blend)
+                : oldTarget + (averageInfluence - oldTarget) * blend;
+          if (Math.abs(nextTarget - oldTarget) < 0.0001) continue;
+
+          const key = weightEditKey(meshIndex, mesh.name, sample.vertexIndex);
+          if (!this.activeWeightStroke.has(key)) {
+            this.activeWeightStroke.set(key, {
+              meshIndex,
+              meshName: mesh.name,
+              vertexIndex: sample.vertexIndex,
+              influences: oldInfluences.map(influence => ({ ...influence }))
+            });
+            this.activeWeightStrokeHadEdit.set(
+              key,
+              this.manualWeightEditsByVertex.has(key)
+            );
+          }
+
+          const otherTotal = oldInfluences
+            .filter(influence => influence.boneName !== center.boneName)
+            .reduce((sum, influence) => sum + influence.weight, 0);
+          const nextInfluences: ManualSkinWeightInfluence[] =
+            otherTotal > 0
+              ? oldInfluences
+                  .filter(influence => influence.boneName !== center.boneName)
+                  .map(influence => ({
+                    boneName: influence.boneName,
+                    weight: influence.weight * ((1 - nextTarget) / otherTotal)
+                  }))
+              : [];
+          if (nextTarget > 0.0001) {
+            nextInfluences.push({ boneName: center.boneName, weight: nextTarget });
+          }
+          if (otherTotal === 0 && nextTarget < 0.9999) {
+            const parentBone =
+              targetBone.parent instanceof THREE.Bone &&
+              boneIndices.has(targetBone.parent.name)
+                ? targetBone.parent
+                : mesh.skeleton.bones.find(bone => bone.name !== center.boneName);
+            const fallbackBone =
+              parentBone?.name !== center.boneName
+                ? parentBone
+                : mesh.skeleton.bones.find(bone => bone.name !== center.boneName);
+            if (fallbackBone) {
+              nextInfluences.push({
+                boneName: fallbackBone.name,
+                weight: 1 - nextTarget
+              });
+            }
+          }
+          if (!writeVertexInfluences(mesh, sample.vertexIndex, nextInfluences, boneIndices)) continue;
+          let editedVertices = editedVerticesByMesh.get(meshIndex);
+          if (!editedVertices) {
+            editedVertices = new Set<number>();
+            editedVerticesByMesh.set(meshIndex, editedVertices);
+          }
+          editedVertices.add(sample.vertexIndex);
+        }
+      }
+
+      const editedVertices = editedVerticesByMesh.get(meshIndex);
+      if (editedVertices && editedVertices.size > 0) {
+        mesh.geometry.attributes.skinIndex.needsUpdate = true;
+        mesh.geometry.attributes.skinWeight.needsUpdate = true;
+        for (const overlay of this.weightPreviewOverlays) {
+          if (overlay.source !== mesh) continue;
+          const overlaySkinIndex = overlay.geometry.attributes.skinIndex;
+          const overlaySkinWeight = overlay.geometry.attributes.skinWeight;
+          const sourceSkinIndex = mesh.geometry.attributes.skinIndex;
+          const sourceSkinWeight = mesh.geometry.attributes.skinWeight;
+          if (!overlaySkinIndex || !overlaySkinWeight || !sourceSkinIndex || !sourceSkinWeight) continue;
+          for (const vertexIndex of editedVertices) {
+            for (let slot = 0; slot < 4; slot++) {
+              overlaySkinIndex.setComponent(
+                vertexIndex,
+                slot,
+                sourceSkinIndex.getComponent(vertexIndex, slot)
+              );
+              overlaySkinWeight.setComponent(
+                vertexIndex,
+                slot,
+                sourceSkinWeight.getComponent(vertexIndex, slot)
+              );
+            }
+          }
+          overlaySkinIndex.needsUpdate = true;
+          overlaySkinWeight.needsUpdate = true;
+        }
+      }
+    }
+
+    let editedVertexCount = 0;
+    for (const [meshIndex, editedVertices] of editedVerticesByMesh) {
+      const mesh = this.meshEntries[meshIndex].mesh as THREE.SkinnedMesh;
+      const outline = this.meshEntries[meshIndex].outlineMesh as THREE.SkinnedMesh | null;
+      const outlineSkinIndex = outline?.geometry.attributes.skinIndex;
+      const outlineSkinWeight = outline?.geometry.attributes.skinWeight;
+      const sourceSkinIndex = mesh.geometry.attributes.skinIndex;
+      const sourceSkinWeight = mesh.geometry.attributes.skinWeight;
+      for (const vertexIndex of editedVertices) {
+        const key = weightEditKey(meshIndex, mesh.name, vertexIndex);
+        const previousEdit = this.activeWeightStroke.get(key);
+        if (previousEdit) {
+          this.manualWeightEditsByVertex.set(key, {
+            ...previousEdit,
+            influences: getVertexInfluences(mesh, vertexIndex)
+          });
+        }
+        if (
+          outline?.isSkinnedMesh &&
+          outlineSkinIndex &&
+          outlineSkinWeight &&
+          sourceSkinIndex &&
+          sourceSkinWeight
+        ) {
+          for (let slot = 0; slot < 4; slot++) {
+            outlineSkinIndex.setComponent(vertexIndex, slot, sourceSkinIndex.getComponent(vertexIndex, slot));
+            outlineSkinWeight.setComponent(vertexIndex, slot, sourceSkinWeight.getComponent(vertexIndex, slot));
+          }
+        }
+        editedVertexCount++;
+      }
+      if (outlineSkinIndex && outlineSkinWeight) {
+        outlineSkinIndex.needsUpdate = true;
+        outlineSkinWeight.needsUpdate = true;
+      }
+    }
+    return editedVertexCount;
+  }
+
+  public endWeightPaintStroke(): number {
+    const before = Array.from(this.activeWeightStroke, ([key, edit]) => ({
+      edit,
+      hadManualEdit: this.activeWeightStrokeHadEdit.get(key) ?? false
+    }));
+    this.activeWeightStroke.clear();
+    this.activeWeightStrokeHadEdit.clear();
+    if (before.length === 0) return 0;
+
+    this.weightUndoStack.push(before);
+    if (this.weightUndoStack.length > 30) this.weightUndoStack.shift();
+    this.metadata.appliedConfig = normalizeCustomModelConfig({
+      ...this.metadata.appliedConfig,
+      manualWeightEdits: Array.from(this.manualWeightEditsByVertex.values())
+    });
+    if (this.weightPreviewVisible) {
+      this.setWeightPreview(false);
+      this.setWeightPreview(true);
+    }
+    return before.length;
+  }
+
+  public get canUndoWeightPaint(): boolean {
+    return this.weightUndoStack.length > 0;
+  }
+
+  public undoWeightPaintStroke(): number {
+    const previous = this.weightUndoStack.pop();
+    if (!previous) return 0;
+
+    for (const { edit, hadManualEdit } of previous) {
+      const mesh = this.meshEntries[edit.meshIndex]?.mesh as THREE.SkinnedMesh | undefined;
+      if (!mesh?.isSkinnedMesh) continue;
+      let boneIndices = this.boneIndicesByMesh.get(edit.meshIndex);
+      if (!boneIndices) {
+        boneIndices = new Map(mesh.skeleton.bones.map((bone, index) => [bone.name, index]));
+        this.boneIndicesByMesh.set(edit.meshIndex, boneIndices);
+      }
+      if (!writeVertexInfluences(mesh, edit.vertexIndex, edit.influences, boneIndices)) continue;
+      const key = weightEditKey(edit.meshIndex, edit.meshName, edit.vertexIndex);
+      if (hadManualEdit) {
+        this.manualWeightEditsByVertex.set(key, {
+          ...edit,
+          influences: edit.influences.map(influence => ({ ...influence }))
+        });
+      } else {
+        this.manualWeightEditsByVertex.delete(key);
+      }
+
+      const outline = this.meshEntries[edit.meshIndex].outlineMesh as THREE.SkinnedMesh | null;
+      if (outline?.isSkinnedMesh) {
+        const sourceSkinIndex = mesh.geometry.attributes.skinIndex;
+        const sourceSkinWeight = mesh.geometry.attributes.skinWeight;
+        const outlineSkinIndex = outline.geometry.attributes.skinIndex;
+        const outlineSkinWeight = outline.geometry.attributes.skinWeight;
+        if (sourceSkinIndex && sourceSkinWeight && outlineSkinIndex && outlineSkinWeight) {
+          for (let slot = 0; slot < 4; slot++) {
+            outlineSkinIndex.setComponent(
+              edit.vertexIndex,
+              slot,
+              sourceSkinIndex.getComponent(edit.vertexIndex, slot)
+            );
+            outlineSkinWeight.setComponent(
+              edit.vertexIndex,
+              slot,
+              sourceSkinWeight.getComponent(edit.vertexIndex, slot)
+            );
+          }
+          outlineSkinIndex.needsUpdate = true;
+          outlineSkinWeight.needsUpdate = true;
+        }
+      }
+      mesh.geometry.attributes.skinIndex.needsUpdate = true;
+      mesh.geometry.attributes.skinWeight.needsUpdate = true;
+    }
+
+    this.metadata.appliedConfig = normalizeCustomModelConfig({
+      ...this.metadata.appliedConfig,
+      manualWeightEdits: Array.from(this.manualWeightEditsByVertex.values())
+    });
+    if (this.weightPreviewVisible) {
+      this.setWeightPreview(false);
+      this.setWeightPreview(true);
+    }
+    return previous.length;
+  }
+
   public update(dt: number) {
     this.mixer.update(dt);
     if (this.skeletonHelper.visible) {
@@ -490,6 +1151,7 @@ export class CustomRigController {
 
   public dispose() {
     this.mixer.stopAllAction();
+    this.setWeightPreview(false);
     this.mixer.uncacheRoot(this.modelRoot);
     for (const skel of this.skeletonsToDispose) {
       skel.dispose();
@@ -1102,6 +1764,76 @@ export function analyzeHumanoidGeometry(
   };
 }
 
+export function applyManualRigLandmarks(
+  detected: HumanoidSkeletonLayout,
+  landmarks: ManualRigLandmarks
+): HumanoidSkeletonLayout {
+  const layout = { ...detected };
+  const point = (name: HumanoidLandmarkName) => landmarks[name];
+
+  const pelvis = point('pelvis');
+  if (pelvis) {
+    layout.pelvisY = clamp(pelvis.y, 0.25, 0.68);
+    layout.pelvisZ = pelvis.z;
+  }
+
+  const chest = point('chest');
+  if (chest) {
+    layout.chestY = clamp(chest.y, layout.pelvisY + 0.045, 0.9);
+    layout.chestZ = chest.z;
+    layout.spineY = lerp(layout.pelvisY, layout.chestY, 0.52);
+    layout.spineZ = lerp(layout.pelvisZ, layout.chestZ, 0.52);
+  }
+
+  const neck = point('neck');
+  if (neck) {
+    layout.neckY = clamp(neck.y, layout.chestY + 0.025, 1.05);
+    layout.neckZ = neck.z;
+  }
+
+  const shoulder = point('leftShoulder');
+  if (shoulder) {
+    layout.shoulderX = clamp(Math.abs(shoulder.x), 0.035, 0.28);
+    layout.shoulderY = clamp(shoulder.y, layout.pelvisY + 0.12, layout.neckY - 0.025);
+    layout.shoulderZ = shoulder.z;
+  }
+
+  const elbow = point('leftElbow');
+  if (elbow) {
+    layout.elbowX = clamp(Math.abs(elbow.x), layout.shoulderX + 0.015, 0.55);
+    layout.elbowY = elbow.y;
+    layout.elbowZ = elbow.z;
+  }
+
+  const wrist = point('leftWrist');
+  if (wrist) {
+    layout.armEndX = clamp(Math.abs(wrist.x), layout.elbowX + 0.015, 0.62);
+    layout.armEndY = wrist.y;
+    layout.armEndZ = wrist.z;
+  }
+
+  const hip = point('leftHip');
+  if (hip) {
+    layout.hipX = clamp(Math.abs(hip.x), 0.025, 0.22);
+    layout.hipZ = hip.z;
+  }
+
+  const knee = point('leftKnee');
+  if (knee) {
+    layout.kneeY = clamp(knee.y, 0.08, layout.pelvisY - 0.05);
+    layout.kneeZ = knee.z;
+  }
+
+  const ankle = point('leftAnkle');
+  if (ankle) {
+    layout.footY = clamp(ankle.y, 0, layout.kneeY - 0.015);
+    layout.footZ = ankle.z;
+  }
+
+  layout.armMinY = Math.min(layout.armMinY, layout.shoulderY, layout.elbowY, layout.armEndY);
+  return layout;
+}
+
 /**
  * Builds the 18-bone full-body humanoid skeletal hierarchy (aligned to X/Y/Z centroids).
  */
@@ -1291,7 +2023,14 @@ export function applyAnatomicalSkinWeights(
     rightFoot: 17
   };
 
-  const armStartX = layout.shoulderX * 0.88;
+  // The arm domain must begin outside the anatomical torso, not at the shoulder
+  // offset. Starting too close to the center progressively pulls chest/bust
+  // vertices into the arms and flattens the model during T-pose or idle motion.
+  const armStartX = clamp(
+    Math.max(layout.torsoRadiusX * 1.18, layout.shoulderX * 1.12),
+    layout.shoulderX * 1.05,
+    0.22
+  );
   const armSpan = Math.max(0.08, layout.armEndX - armStartX);
   const torsoSigma = 0.09;
   const isolateBack = Boolean(layout.hasBackAppendages && layout.backAppendageZ !== undefined);
@@ -1325,7 +2064,17 @@ export function applyAnatomicalSkinWeights(
     if (y >= layout.armMinY - 0.08 && y <= layout.neckY - 0.05) {
       const lateralMask = smoothstep(armStartX - 0.015, armStartX + 0.04, ax);
       const lowFade = smoothstep(layout.armMinY - 0.08, layout.armMinY - 0.01, y);
-      armMask = lateralMask * lowFade * (1 - wHead) * rearFade;
+      const torsoGuardY =
+        y >= layout.pelvisY - 0.02 && y <= layout.neckY - 0.02
+          ? 1
+          : 0;
+      const torsoGuardX = smoothstep(
+        layout.torsoRadiusX * 1.10,
+        layout.torsoRadiusX * 1.52,
+        ax
+      );
+      const torsoGuard = torsoGuardY * (1 - torsoGuardX);
+      armMask = lateralMask * lowFade * (1 - wHead) * rearFade * (1 - torsoGuard);
     }
 
     // 3. Leg domain mask (left/right isolated below pelvisY; soften rear coat tails)
@@ -2966,6 +3715,7 @@ export function createControllerFromGltf(
       materialMode: resolvedMaterialMode,
       weaponsEnabled: resolvedWeapons
     });
+    applyManualSkinWeightEdits(meshEntries, appliedConfig.manualWeightEdits);
 
     const nativeProfile: AutoRigProfile = {
       proportionClass: 'balanced',
@@ -3090,15 +3840,20 @@ export function createControllerFromGltf(
   const probeGeo = new THREE.BufferGeometry();
   probeGeo.setAttribute('position', new THREE.Float32BufferAttribute(combinedPositions, 3));
   const rawAutoLayout = analyzeHumanoidGeometry(probeGeo);
-  const layout =
+  const detectedLayout =
     options.config &&
     (options.config.pelvisHeightOffset ||
       options.config.shoulderHeightOffset ||
       options.config.neckHeightOffset ||
       (options.config.armSpanScale !== undefined && options.config.armSpanScale !== 1.0) ||
-      options.config.isolateBackAppendages === false)
+      options.config.isolateBackAppendages === false ||
+      Object.keys(baseConfig.manualLandmarks).length > 0)
       ? analyzeHumanoidGeometry(probeGeo, baseConfig)
       : rawAutoLayout;
+  const layout = applyManualRigLandmarks(
+    detectedLayout,
+    baseConfig.manualLandmarks
+  );
   probeGeo.dispose();
 
   const { root, skeleton, bonesMap } = buildHumanoidSkeleton(layout);
@@ -3241,8 +3996,9 @@ export function createControllerFromGltf(
     layout,
     baseConfig.armDropOffsetRad
   );
+  // Auto-rigged static meshes have no source skeleton for embedded tracks to drive.
   const { resolved, allClips, animationSource, oneShotRoles } = matchEmbeddedAnimations(
-    gltf.animations ?? [],
+    [],
     fallbackClips
   );
 
@@ -3256,6 +4012,7 @@ export function createControllerFromGltf(
     materialMode: resolvedMaterialMode,
     weaponsEnabled: resolvedWeapons
   });
+  applyManualSkinWeightEdits(meshEntries, appliedConfig.manualWeightEdits);
 
   const worldPositionsProbe = new Map<THREE.Bone, THREE.Vector3>();
   modelWrapper.updateMatrixWorld(true);

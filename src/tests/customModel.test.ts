@@ -4,12 +4,15 @@ import * as THREE from 'three';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   analyzeHumanoidGeometry,
+  applyManualRigLandmarks,
   applyAnatomicalSkinWeights,
+  applyManualSkinWeightEdits,
   buildHumanoidSkeleton,
   createControllerFromGltf,
   createRigAnimationClips,
   detectModelFormat,
   importRiggedModelFromBuffer,
+  normalizeCustomModelConfig,
   normalizeModelGeometry
 } from '../rendering/CustomModelRig';
 import {
@@ -275,6 +278,88 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     assert.equal(bonesMap.rightFoot.parent, bonesMap.rightLeg);
   });
 
+  it('should apply normalized manual landmarks while keeping bilateral joints mirrored', () => {
+    const detected = analyzeHumanoidGeometry(new THREE.BoxGeometry(0.2, 1, 0.2));
+    const config = normalizeCustomModelConfig({
+      manualLandmarks: {
+        pelvis: { x: 0, y: 0.4, z: 0.01 },
+        chest: { x: 0, y: 0.66, z: 0.015 },
+        neck: { x: 0, y: 0.82, z: 0.01 },
+        leftShoulder: { x: -0.13, y: 0.65, z: 0 },
+        leftElbow: { x: -0.28, y: 0.6, z: 0 },
+        leftWrist: { x: -0.41, y: 0.56, z: 0 },
+        leftHip: { x: -0.09, y: 0.38, z: 0 },
+        leftKnee: { x: -0.09, y: 0.2, z: 0 },
+        leftAnkle: { x: -0.09, y: 0.03, z: 0 }
+      }
+    });
+    const layout = applyManualRigLandmarks(detected, config.manualLandmarks);
+    const { root, bonesMap } = buildHumanoidSkeleton(layout);
+    root.updateMatrixWorld(true);
+
+    const leftShoulder = bonesMap.leftShoulder.getWorldPosition(new THREE.Vector3());
+    const rightShoulder = bonesMap.rightShoulder.getWorldPosition(new THREE.Vector3());
+    const leftElbow = bonesMap.leftArm.getWorldPosition(new THREE.Vector3());
+    const rightElbow = bonesMap.rightArm.getWorldPosition(new THREE.Vector3());
+    const leftWrist = bonesMap.leftHand.getWorldPosition(new THREE.Vector3());
+    const rightWrist = bonesMap.rightHand.getWorldPosition(new THREE.Vector3());
+
+    assert.ok(leftShoulder.x < 0 && rightShoulder.x > 0);
+    assert.ok(Math.abs(leftShoulder.x + rightShoulder.x) < 1e-5);
+    assert.ok(Math.abs(leftElbow.x + rightElbow.x) < 1e-5);
+    assert.ok(Math.abs(leftWrist.x + rightWrist.x) < 1e-5);
+    assert.ok(Math.abs(leftShoulder.y - 0.65) < 1e-5);
+    assert.ok(Math.abs(leftElbow.y - 0.6) < 1e-5);
+    assert.ok(Math.abs(leftWrist.y - 0.56) < 1e-5);
+  });
+
+  it('should restore persisted manual skin weights by bone name and normalize their sum', () => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+    geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute([0, 0, 0, 0], 4));
+    geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute([1, 0, 0, 0], 4));
+    const root = new THREE.Bone();
+    root.name = 'root';
+    const arm = new THREE.Bone();
+    arm.name = 'leftArm';
+    const skeleton = new THREE.Skeleton([root, arm]);
+    const material = new THREE.MeshBasicMaterial();
+    const mesh = new THREE.SkinnedMesh(geometry, material);
+    mesh.name = 'body';
+    mesh.bind(skeleton);
+
+    const config = normalizeCustomModelConfig({
+      manualWeightEdits: [{
+        meshIndex: 0,
+        meshName: 'body',
+        vertexIndex: 0,
+        influences: [
+          { boneName: 'root', weight: 0.4 },
+          { boneName: 'leftArm', weight: 0.6 }
+        ]
+      }]
+    });
+    applyManualSkinWeightEdits([{
+      mesh,
+      toonMat: material,
+      texturedMat: material,
+      outlineMesh: null
+    }], config.manualWeightEdits);
+
+    const skinIndex = geometry.attributes.skinIndex;
+    const skinWeight = geometry.attributes.skinWeight;
+    const armSlot = Array.from({ length: 4 }, (_, slot) => slot).find(
+      slot => skeleton.bones[skinIndex.getComponent(0, slot)] === arm
+    );
+    assert.notEqual(armSlot, undefined);
+    assert.ok(skinWeight.getComponent(0, armSlot!) > 0.59);
+    const total = Array.from({ length: 4 }, (_, slot) => skinWeight.getComponent(0, slot))
+      .reduce((sum, weight) => sum + weight, 0);
+    assert.ok(Math.abs(total - 1) < 0.001);
+    geometry.dispose();
+    material.dispose();
+  });
+
   it('should assign normalized 4-weight skinning to all vertices', () => {
     const box = new THREE.BoxGeometry(0.8, 1.0, 0.4, 4, 8, 4);
     box.translate(0, 0.5, 0);
@@ -491,6 +576,44 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     controller.dispose();
   });
 
+  it('should use generated arm animations for static auto-rigs even when the GLB has unrelated idle tracks', () => {
+    const scene = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.8, 1, 0.3, 4, 8, 2),
+      new THREE.MeshStandardMaterial({ color: 0x888888 })
+    );
+    body.name = 'Body';
+    body.position.y = 0.5;
+    scene.add(body);
+    const sourceIdle = new THREE.AnimationClip('Idle_Reference', 1, [
+      new THREE.VectorKeyframeTrack('Body.position', [0, 1], [0, 0.5, 0, 0, 0.6, 0])
+    ]);
+
+    const controller = createControllerFromGltf(
+      {
+        scene,
+        scenes: [scene],
+        animations: [sourceIdle],
+        cameras: [],
+        asset: {}
+      } as unknown as GLTF,
+      { modelName: 'static_with_object_idle.glb', outlinesEnabled: false }
+    );
+
+    assert.equal(controller.metadata.rigSource, 'auto_rig');
+    assert.equal(controller.metadata.animationSource, 'procedural');
+    assert.ok(!controller.metadata.availableClipNames.includes('Idle_Reference'));
+    const leftShoulder = controller.bones.leftShoulder;
+    assert.ok(leftShoulder);
+    const restQuaternion = leftShoulder.quaternion.clone();
+    controller.update(0.4);
+    assert.ok(
+      1 - Math.abs(restQuaternion.dot(leftShoulder.quaternion)) > 0.001,
+      'Generated idle should rotate the auto-rig shoulder away from the static T-pose'
+    );
+    controller.dispose();
+  });
+
   it('should fit T-pose sleeves and head cleanly without tearing on unrigged static meshes', () => {
     // Build synthetic T-pose static mesh mirroring model01.glb proportions
     const positions: number[] = [];
@@ -536,7 +659,8 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
         [
           -0.35, 0.53, 0, // lower sleeve vertex (previously torn to spine!)
            0.35, 0.53, 0, // right lower sleeve vertex
-          -0.16, 0.84, 0  // left ear/hair vertex (previously torn to arm!)
+          -0.16, 0.84, 0, // left ear/hair vertex (previously torn to arm!)
+          0.12, 0.62, 0   // right bust/chest vertex must remain on the torso
         ],
         3
       )
@@ -561,6 +685,12 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     // Left ear/hair -> predominantly head (4)
     assert.equal(idx.getX(2), 4, `Head/ear vertex bound to bone ${idx.getX(2)}`);
 
+    // Chest/bust vertices remain attached to the torso, never leaking into arm bones
+    assert.ok(
+      idx.getX(3) === 1 || idx.getX(3) === 2 || idx.getX(3) === 3,
+      `Bust/chest vertex bound to arm bone ${idx.getX(3)}`
+    );
+
     // Verify full createControllerFromGltf on static mesh does NOT shift vertices by bone positions!
     const staticScene = new THREE.Group();
     staticScene.add(rawMesh);
@@ -568,6 +698,110 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
       { scene: staticScene, scenes: [staticScene], animations: [], cameras: [], asset: {} } as unknown as GLTF,
       { outlinesEnabled: true, modelName: 'tpose.glb' }
     );
+    staticCtrl.setWeightPreview(true);
+    let previewCount = 0;
+    staticCtrl.group.traverse(obj => {
+      if (obj.name.endsWith('_weight_preview')) previewCount++;
+    });
+    assert.ok(previewCount > 0, 'Weight preview should create skinned influence overlays');
+    staticCtrl.setWeightPreview(false);
+    let remainingPreviewCount = 0;
+    staticCtrl.group.traverse(obj => {
+      if (obj.name.endsWith('_weight_preview')) remainingPreviewCount++;
+    });
+    assert.equal(remainingPreviewCount, 0, 'Disabling preview should remove its overlays');
+
+    const paintMesh = staticCtrl.skinnedMesh;
+    const paintGeometry = paintMesh.geometry;
+    const skinIndex = paintGeometry.attributes.skinIndex;
+    const skinWeight = paintGeometry.attributes.skinWeight;
+    const firstBone = paintMesh.skeleton.bones[skinIndex.getX(0)];
+    const targetBone = paintMesh.skeleton.bones.find(bone => bone !== firstBone);
+    assert.ok(targetBone, 'Auto-rig should expose multiple editable bones');
+    const previousInfluence = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (paintMesh.skeleton.bones[skinIndex.getComponent(0, slot)] === targetBone ? weight : 0);
+    }, 0);
+    const brushPoint = paintMesh.getVertexPosition(0, new THREE.Vector3());
+    paintMesh.localToWorld(brushPoint);
+    staticCtrl.beginWeightPaintStroke();
+    assert.ok(
+      staticCtrl.paintWeightsAt(brushPoint, targetBone.name, 0.02, 1, 'paint', false) > 0,
+      'Weight brush should edit vertices within its radius'
+    );
+    const afterPaint = staticCtrl.endWeightPaintStroke();
+    assert.ok(afterPaint > 0);
+    assert.ok(staticCtrl.canUndoWeightPaint);
+    const paintedInfluence = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (paintMesh.skeleton.bones[skinIndex.getComponent(0, slot)] === targetBone ? weight : 0);
+    }, 0);
+    assert.ok(paintedInfluence > previousInfluence);
+    const paintedWeightSum = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight) => sum + weight, 0);
+    assert.ok(Math.abs(paintedWeightSum - 1) < 0.001);
+    assert.ok(staticCtrl.metadata.appliedConfig.manualWeightEdits.length > 0);
+    const replayScene = new THREE.Group();
+    replayScene.add(rawMesh.clone());
+    const replayCtrl = createControllerFromGltf(
+      { scene: replayScene, scenes: [replayScene], animations: [], cameras: [], asset: {} } as unknown as GLTF,
+      { outlinesEnabled: true, modelName: 'tpose.glb', config: staticCtrl.metadata.appliedConfig }
+    );
+    const replayBone = replayCtrl.skinnedMesh.skeleton.bones.find(
+      bone => bone.name === targetBone.name
+    );
+    assert.ok(replayBone);
+    const replaySkinIndex = replayCtrl.skinnedMesh.geometry.attributes.skinIndex;
+    const replaySkinWeight = replayCtrl.skinnedMesh.geometry.attributes.skinWeight;
+    const replayInfluence = Array.from({ length: 4 }, (_, slot) =>
+      replaySkinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (
+        replayCtrl.skinnedMesh.skeleton.bones[replaySkinIndex.getComponent(0, slot)] === replayBone
+          ? weight
+          : 0
+      );
+    }, 0);
+    assert.ok(Math.abs(replayInfluence - paintedInfluence) < 0.001);
+    replayCtrl.dispose();
+    assert.ok(staticCtrl.undoWeightPaintStroke() > 0, 'Last paint stroke should be undoable');
+    const restoredInfluence = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (paintMesh.skeleton.bones[skinIndex.getComponent(0, slot)] === targetBone ? weight : 0);
+    }, 0);
+    assert.ok(Math.abs(restoredInfluence - previousInfluence) < 0.001);
+    assert.equal(staticCtrl.canUndoWeightPaint, false);
+    assert.equal(staticCtrl.metadata.appliedConfig.manualWeightEdits.length, 0);
+
+    const firstBoneInfluence = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (paintMesh.skeleton.bones[skinIndex.getComponent(0, slot)] === firstBone ? weight : 0);
+    }, 0);
+    staticCtrl.beginWeightPaintStroke();
+    assert.ok(
+      staticCtrl.paintWeightsAt(brushPoint, firstBone.name, 0.02, 1, 'erase', false) > 0,
+      'Erase mode should reduce a bone influence'
+    );
+    staticCtrl.endWeightPaintStroke();
+    const erasedInfluence = Array.from({ length: 4 }, (_, slot) =>
+      skinWeight.getComponent(0, slot)
+    ).reduce((sum, weight, slot) => {
+      return sum + (paintMesh.skeleton.bones[skinIndex.getComponent(0, slot)] === firstBone ? weight : 0);
+    }, 0);
+    assert.ok(erasedInfluence < firstBoneInfluence);
+    staticCtrl.undoWeightPaintStroke();
+
+    const persistedWeightConfig = normalizeCustomModelConfig(staticCtrl.metadata.appliedConfig);
+    assert.deepEqual(
+      persistedWeightConfig.manualWeightEdits,
+      staticCtrl.metadata.appliedConfig.manualWeightEdits
+    );
+
     staticCtrl.group.updateMatrixWorld(true);
     staticCtrl.skeleton.update();
     const skinnedPos = new THREE.Vector3();
@@ -949,6 +1183,15 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
 
     // Library persistence + priority resolution: hero > job > faction > default_glb
     const dummyBuf = new Uint8Array([1, 2, 3, 4]).buffer;
+    const manualLandmarks = {
+      leftShoulder: { x: -0.13, y: 0.65, z: 0.01 }
+    };
+    const manualWeightEdits = [{
+      meshIndex: 0,
+      meshName: 'BodyMesh',
+      vertexIndex: 14,
+      influences: [{ boneName: 'leftArm', weight: 1 }]
+    }];
     const valkyrieEntry = await saveCustomModelEntry({
       id: 'mdl_valk',
       name: 'Valkiria',
@@ -956,7 +1199,13 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
       buffer: dummyBuf,
       companions: [],
       textureBuffer: null,
-      config: { ...ctrl.metadata.appliedConfig, scale: 1.15, facingYawDeg: 180 },
+      config: {
+        ...ctrl.metadata.appliedConfig,
+        scale: 1.15,
+        facingYawDeg: 180,
+        manualLandmarks,
+        manualWeightEdits
+      },
       autoProfile: ctrl.metadata.autoProfile ?? null
     });
     await assignCustomModelToSlot('hero:hero_2', valkyrieEntry.id);
@@ -971,6 +1220,8 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     if (lyra?.source === 'library') {
       assert.equal(lyra.entry.id, 'mdl_valk');
       assert.equal(lyra.config.scale, 1.15);
+      assert.deepEqual(lyra.config.manualLandmarks, manualLandmarks);
+      assert.deepEqual(lyra.config.manualWeightEdits, manualWeightEdits);
     }
 
     // hero_1 falls back to default_glb when unassigned
@@ -992,6 +1243,8 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     const parsed = parseImportedConfigJson(JSON.stringify(payload));
     assert.equal(parsed.config.scale, 1.15);
     assert.equal(parsed.config.facingYawDeg, 180);
+    assert.deepEqual(parsed.config.manualLandmarks, manualLandmarks);
+    assert.deepEqual(parsed.config.manualWeightEdits, manualWeightEdits);
     assert.deepEqual(parsed.assignments, ['hero:hero_2']);
 
     resetCustomModelLibraryForTests();

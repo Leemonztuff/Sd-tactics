@@ -14,6 +14,9 @@ import {
   CustomMaterialMode,
   CustomRigMetadata,
   CustomModelConfig,
+  HumanoidLandmarkName,
+  RigLandmarkPosition,
+  SkinWeightPaintMode,
   DEFAULT_CUSTOM_MODEL_CONFIG,
   normalizeCustomModelConfig
 } from '../rendering/CustomModelRig';
@@ -92,6 +95,18 @@ const POSE_LABELS: Record<string, string> = {
   relaxed: 'Relajada'
 };
 
+const RIG_LANDMARK_OPTIONS: Array<{ id: HumanoidLandmarkName; label: string }> = [
+  { id: 'pelvis', label: 'Pelvis · centro' },
+  { id: 'chest', label: 'Tórax · centro' },
+  { id: 'neck', label: 'Cuello · centro' },
+  { id: 'leftShoulder', label: 'Hombro izquierdo' },
+  { id: 'leftElbow', label: 'Codo izquierdo' },
+  { id: 'leftWrist', label: 'Muñeca izquierda' },
+  { id: 'leftHip', label: 'Cadera izquierda' },
+  { id: 'leftKnee', label: 'Rodilla izquierda' },
+  { id: 'leftAnkle', label: 'Tobillo izquierdo' }
+];
+
 export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBattle }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -100,6 +115,17 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
   const sceneRef = useRef<THREE.Scene | null>(null);
   const resetCameraFnRef = useRef<(() => void) | null>(null);
   const renderOnceRef = useRef<(() => void) | null>(null);
+  const landmarkPickingRef = useRef(false);
+  const weightPaintingRef = useRef(false);
+  const selectedLandmarkRef = useRef<HumanoidLandmarkName>('pelvis');
+  const onLandmarkPlacedRef = useRef<(point: RigLandmarkPosition) => void>(() => {});
+  const onWeightPaintAtRef = useRef<(point: THREE.Vector3) => number>(() => 0);
+  const onWeightStrokeStartRef = useRef<() => void>(() => {});
+  const onWeightStrokeEndRef = useRef<() => void>(() => {});
+  const weightBrushCursorRef = useRef<THREE.Mesh | null>(null);
+  const updateLandmarkMarkersRef = useRef<
+    (landmarks: CustomModelConfig['manualLandmarks'], rig: CustomRigController | null) => void
+  >(() => {});
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +137,19 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
   const [metadata, setMetadata] = useState<CustomRigMetadata | null>(null);
   const [showEditor, setShowEditor] = useState(false);
+  const [rigWizardOpen, setRigWizardOpen] = useState(false);
+  const [selectedLandmark, setSelectedLandmark] = useState<HumanoidLandmarkName>('pelvis');
+  const [isPlacingLandmark, setIsPlacingLandmark] = useState(false);
+  const [showWeightPreview, setShowWeightPreview] = useState(false);
+  const [wizardDirty, setWizardDirty] = useState(false);
+  const [weightPaintEnabled, setWeightPaintEnabled] = useState(false);
+  const [selectedWeightBone, setSelectedWeightBone] = useState('leftArm');
+  const [weightPaintMode, setWeightPaintMode] = useState<SkinWeightPaintMode>('paint');
+  const [weightBrushRadius, setWeightBrushRadius] = useState(0.075);
+  const [weightBrushStrength, setWeightBrushStrength] = useState(0.45);
+  const [weightMirrorEnabled, setWeightMirrorEnabled] = useState(true);
+  const [canUndoWeights, setCanUndoWeights] = useState(false);
+  const [lastPaintedVertexCount, setLastPaintedVertexCount] = useState(0);
 
   const [importedBuffer, setImportedBuffer] = useState<{
     buffer: ArrayBuffer;
@@ -132,9 +171,20 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
   const rigRef = useRef<CustomRigController | null>(null);
   const stateRefs = useRef({
     playbackSpeed,
-    showSkeleton
+    showSkeleton,
+    showWeightPreview,
+    weightPaintEnabled,
+    weightBrushRadius
   });
-  stateRefs.current = { playbackSpeed, showSkeleton };
+  stateRefs.current = {
+    playbackSpeed,
+    showSkeleton,
+    showWeightPreview,
+    weightPaintEnabled,
+    weightBrushRadius
+  };
+  selectedLandmarkRef.current = selectedLandmark;
+  landmarkPickingRef.current = isPlacingLandmark;
 
   const showToast = (msg: string) => {
     setStatusNote(msg);
@@ -143,16 +193,70 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
     }, 3200);
   };
 
+  onWeightPaintAtRef.current = point => {
+    const rig = rigRef.current;
+    if (!rig) return 0;
+    const boneNames = rig.skinnedMesh?.skeleton.bones.map(bone => bone.name) ?? [];
+    const boneName = boneNames.includes(selectedWeightBone)
+      ? selectedWeightBone
+      : boneNames.find(name => /arm/i.test(name)) ?? boneNames[0];
+    if (!boneName) return 0;
+    const edited = rig.paintWeightsAt(
+      point,
+      boneName,
+      weightBrushRadius,
+      weightBrushStrength,
+      weightPaintMode,
+      weightMirrorEnabled
+    );
+    if (edited > 0) renderOnceRef.current?.();
+    return edited;
+  };
+  onWeightStrokeStartRef.current = () => rigRef.current?.beginWeightPaintStroke();
+  onWeightStrokeEndRef.current = () => {
+    const rig = rigRef.current;
+    if (!rig) return;
+    const changed = rig.endWeightPaintStroke();
+    if (changed > 0) {
+      const nextConfig = normalizeCustomModelConfig(rig.metadata.appliedConfig);
+      setConfig(nextConfig);
+      if (importedBuffer) setCustomHeroConfigOverride(nextConfig);
+      setCanUndoWeights(rig.canUndoWeightPaint);
+      setLastPaintedVertexCount(changed);
+      showToast(`${changed} vértices ajustados; listos para guardar o exportar`);
+      renderOnceRef.current?.();
+    }
+  };
+
   const refreshLibraryState = async () => {
     await initCustomModelLibrary();
     setSavedModels(listSavedCustomModels());
     setAssignments(getModelAssignments());
   };
 
+  onLandmarkPlacedRef.current = point => {
+    const rig = rigRef.current;
+    if (!rig) return;
+
+    const landmark = selectedLandmarkRef.current;
+    const nextConfig = normalizeCustomModelConfig({
+      ...config,
+      manualLandmarks: {
+        ...config.manualLandmarks,
+        [landmark]: point
+      }
+    });
+    setConfig(nextConfig);
+    setWizardDirty(true);
+    updateLandmarkMarkersRef.current(nextConfig.manualLandmarks, rig);
+    renderOnceRef.current?.();
+  };
+
   const mountRigIntoScene = (
     rig: CustomRigController,
     isCustomUpload: boolean,
-    explicitConfig?: Partial<CustomModelConfig>
+    explicitConfig?: Partial<CustomModelConfig>,
+    preserveCamera = false
   ) => {
     const scene = sceneRef.current;
     if (!scene) {
@@ -184,16 +288,20 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
     rig.applyDisplayConfig(mergedCfg);
     rig.setSkeletonVisible(stateRefs.current.showSkeleton);
+    rig.setWeightPreview(stateRefs.current.showWeightPreview);
 
     setConfig(mergedCfg);
     setMaterialMode(mergedCfg.materialMode);
     setShowWeapons(mergedCfg.weaponsEnabled);
     setPlaybackSpeed(mergedCfg.playbackSpeed);
+    setCanUndoWeights(false);
+    setLastPaintedVertexCount(0);
     setActiveAnim('idle');
     setMetadata({ ...rig.metadata });
 
     scene.add(rig.group);
-    resetCameraFnRef.current?.();
+    updateLandmarkMarkersRef.current(mergedCfg.manualLandmarks, rig);
+    if (!preserveCamera) resetCameraFnRef.current?.();
     rig.update(0);
     renderOnceRef.current?.();
   };
@@ -217,6 +325,64 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0e1320);
     sceneRef.current = scene;
+    const weightBrushCursor = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 16, 10),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc857,
+        transparent: true,
+        opacity: 0.6,
+        wireframe: true,
+        depthWrite: false
+      })
+    );
+    weightBrushCursor.name = 'weight_paint_brush_cursor';
+    weightBrushCursor.visible = false;
+    weightBrushCursor.renderOrder = 25;
+    scene.add(weightBrushCursor);
+    weightBrushCursorRef.current = weightBrushCursor;
+    const landmarkMarkerGroup = new THREE.Group();
+    landmarkMarkerGroup.name = 'rig_calibration_landmarks';
+    scene.add(landmarkMarkerGroup);
+
+    updateLandmarkMarkersRef.current = (landmarks, rig) => {
+      for (const marker of [...landmarkMarkerGroup.children]) {
+        landmarkMarkerGroup.remove(marker);
+        const mesh = marker as THREE.Mesh;
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      }
+      if (!rig) return;
+
+      for (const [name, point] of Object.entries(landmarks)) {
+        if (!point) continue;
+        const isSelected = name === selectedLandmarkRef.current;
+        const points = [{ name, point, isMirror: false }];
+        if (name.startsWith('left')) {
+          points.push({
+            name: `mirror_${name}`,
+            point: { ...point, x: -point.x },
+            isMirror: true
+          });
+        }
+        for (const markerPoint of points) {
+          const marker = new THREE.Mesh(
+            new THREE.SphereGeometry(isSelected && !markerPoint.isMirror ? 0.018 : 0.013, 12, 8),
+            new THREE.MeshBasicMaterial({
+              color: isSelected && !markerPoint.isMirror ? 0xffd166 : 0x38bdf8,
+              depthTest: false
+            })
+          );
+          marker.name = `landmark_${markerPoint.name}`;
+          marker.position.copy(
+            rig.modelRoot.localToWorld(
+              new THREE.Vector3(markerPoint.point.x, markerPoint.point.y, markerPoint.point.z)
+            )
+          );
+          marker.renderOrder = 20;
+          landmarkMarkerGroup.add(marker);
+        }
+      }
+    };
 
     const camera = new THREE.PerspectiveCamera(34, width / height, 0.08, 60);
 
@@ -304,22 +470,56 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
       updateCameraPos();
     };
 
-    const onPointerDown = (e: MouseEvent | TouchEvent) => {
-      isDragging = true;
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-      prevMouseX = clientX;
-      prevMouseY = clientY;
+    const paintWeightAtPointer = (event: PointerEvent, paint: boolean) => {
+      if (lastWeightPaintSample > 0 && event.timeStamp - lastWeightPaintSample < 20) return;
+      lastWeightPaintSample = event.timeStamp;
+      const rect = domEl.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const rig = rigRef.current;
+      if (!rig) return;
+      const hit = raycaster.intersectObjects(rig.meshEntries.map(entry => entry.mesh), false)[0];
+      if (!hit) {
+        weightBrushCursor.visible = false;
+        return;
+      }
+      weightBrushCursor.visible = stateRefs.current.weightPaintEnabled;
+      weightBrushCursor.position.copy(hit.point);
+      weightBrushCursor.scale.setScalar(stateRefs.current.weightBrushRadius);
+      if (paint) onWeightPaintAtRef.current(hit.point);
     };
 
-    const onPointerMove = (e: MouseEvent | TouchEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (landmarkPickingRef.current) return;
+      if (stateRefs.current.weightPaintEnabled && e.button === 0) {
+        weightPaintingRef.current = true;
+        lastWeightPaintSample = 0;
+        onWeightStrokeStartRef.current();
+        domEl.setPointerCapture(e.pointerId);
+        paintWeightAtPointer(e, true);
+        e.preventDefault();
+        return;
+      }
+      isDragging = true;
+      prevMouseX = e.clientX;
+      prevMouseY = e.clientY;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (weightPaintingRef.current) {
+        paintWeightAtPointer(e, true);
+        return;
+      }
+      if (stateRefs.current.weightPaintEnabled) {
+        paintWeightAtPointer(e, false);
+        return;
+      }
       if (!isDragging) return;
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-      const dx = clientX - prevMouseX;
-      const dy = clientY - prevMouseY;
-      prevMouseX = clientX;
-      prevMouseY = clientY;
+      const dx = e.clientX - prevMouseX;
+      const dy = e.clientY - prevMouseY;
+      prevMouseX = e.clientX;
+      prevMouseY = e.clientY;
 
       spherical.theta -= dx * 0.008;
       spherical.phi = Math.max(0.2, Math.min(Math.PI / 2 - 0.04, spherical.phi - dy * 0.008));
@@ -327,6 +527,10 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
     };
 
     const onPointerUp = () => {
+      if (weightPaintingRef.current) {
+        weightPaintingRef.current = false;
+        onWeightStrokeEndRef.current();
+      }
       isDragging = false;
     };
 
@@ -336,14 +540,47 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
       updateCameraPos();
     };
 
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let lastWeightPaintSample = 0;
+    const onCanvasClick = (event: MouseEvent) => {
+      if (!landmarkPickingRef.current) return;
+      const rig = rigRef.current;
+      if (!rig) return;
+
+      const rect = domEl.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const targets = rig.meshEntries.map(entry => entry.mesh);
+      const hit = raycaster.intersectObjects(targets, false)[0];
+      if (!hit) {
+        showToast('Haz clic sobre la malla visible para colocar la articulación.');
+        return;
+      }
+
+      event.preventDefault();
+      const local = rig.modelRoot.worldToLocal(hit.point.clone());
+      const landmark = selectedLandmarkRef.current;
+      if (landmark === 'pelvis' || landmark === 'chest' || landmark === 'neck') {
+        local.z *= 0.35;
+      } else {
+        local.x = -Math.max(0.02, Math.abs(local.x) - 0.012);
+        local.z *= 0.55;
+      }
+      onLandmarkPlacedRef.current({ x: local.x, y: local.y, z: local.z });
+      landmarkPickingRef.current = false;
+      setIsPlacingLandmark(false);
+    };
+
     const domEl = renderer.domElement;
-    domEl.addEventListener('mousedown', onPointerDown);
-    window.addEventListener('mousemove', onPointerMove);
-    window.addEventListener('mouseup', onPointerUp);
-    domEl.addEventListener('touchstart', onPointerDown, { passive: true });
-    window.addEventListener('touchmove', onPointerMove, { passive: true });
-    window.addEventListener('touchend', onPointerUp);
+    domEl.style.touchAction = 'none';
+    domEl.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     domEl.addEventListener('wheel', onWheel, { passive: false });
+    domEl.addEventListener('click', onCanvasClick);
 
     // 2. Load Initial Model
     setLoading(true);
@@ -457,18 +694,29 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
       clearTimeout(frameId);
       resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
-      domEl.removeEventListener('mousedown', onPointerDown);
-      window.removeEventListener('mousemove', onPointerMove);
-      window.removeEventListener('mouseup', onPointerUp);
-      domEl.removeEventListener('touchstart', onPointerDown);
-      window.removeEventListener('touchmove', onPointerMove);
-      window.removeEventListener('touchend', onPointerUp);
+      domEl.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       domEl.removeEventListener('wheel', onWheel);
+      domEl.removeEventListener('click', onCanvasClick);
+      updateLandmarkMarkersRef.current = () => {};
 
       if (rigRef.current) {
         rigRef.current.dispose();
         rigRef.current = null;
       }
+      for (const marker of [...landmarkMarkerGroup.children]) {
+        landmarkMarkerGroup.remove(marker);
+        const mesh = marker as THREE.Mesh;
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      }
+      scene.remove(landmarkMarkerGroup);
+      scene.remove(weightBrushCursor);
+      weightBrushCursor.geometry.dispose();
+      (weightBrushCursor.material as THREE.Material).dispose();
+      weightBrushCursorRef.current = null;
       sceneRef.current = null;
       resetCameraFnRef.current = null;
       renderOnceRef.current = null;
@@ -481,7 +729,10 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
     };
   }, [isOpen]);
 
-  const rebuildWithConfig = async (nextConfig: CustomModelConfig) => {
+  const rebuildWithConfig = async (
+    nextConfig: CustomModelConfig,
+    preserveCamera = false
+  ): Promise<boolean> => {
     setError(null);
     try {
       let rig: CustomRigController;
@@ -505,11 +756,116 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
           config: nextConfig
         });
       }
-      mountRigIntoScene(rig, Boolean(importedBuffer), nextConfig);
+      mountRigIntoScene(rig, Boolean(importedBuffer), nextConfig, preserveCamera);
       showToast('Rig recalibrado');
+      return true;
     } catch (err) {
       console.error('Error recalibrating rig:', err);
       setError('No se pudo recalibrar el esqueleto con estos parámetros.');
+      return false;
+    }
+  };
+
+  const applyManualLandmarkAxis = (
+    landmark: HumanoidLandmarkName,
+    axis: keyof RigLandmarkPosition,
+    value: number
+  ) => {
+    const current = config.manualLandmarks[landmark] ?? { x: 0, y: 0.5, z: 0 };
+    const nextPoint = { ...current, [axis]: value };
+    const nextConfig = normalizeCustomModelConfig({
+      ...config,
+      manualLandmarks: { ...config.manualLandmarks, [landmark]: nextPoint }
+    });
+    setConfig(nextConfig);
+    setWizardDirty(true);
+    updateLandmarkMarkersRef.current(nextConfig.manualLandmarks, rigRef.current);
+    renderOnceRef.current?.();
+  };
+
+  const handleSelectLandmark = (landmark: HumanoidLandmarkName) => {
+    selectedLandmarkRef.current = landmark;
+    setSelectedLandmark(landmark);
+    updateLandmarkMarkersRef.current(config.manualLandmarks, rigRef.current);
+    renderOnceRef.current?.();
+  };
+
+  const handleLandmarkStep = (offset: -1 | 1) => {
+    const index = RIG_LANDMARK_OPTIONS.findIndex(option => option.id === selectedLandmark);
+    const nextIndex = Math.max(0, Math.min(RIG_LANDMARK_OPTIONS.length - 1, index + offset));
+    handleSelectLandmark(RIG_LANDMARK_OPTIONS[nextIndex].id);
+  };
+
+  const handlePlaceLandmark = () => {
+    if (isPlacingLandmark) {
+      landmarkPickingRef.current = false;
+      setIsPlacingLandmark(false);
+      return;
+    }
+    selectedLandmarkRef.current = selectedLandmark;
+    landmarkPickingRef.current = true;
+    setIsPlacingLandmark(true);
+  };
+
+  const handleApplyLandmarks = async () => {
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
+    if (await rebuildWithConfig(config, true)) setWizardDirty(false);
+  };
+
+  const handleResetLandmarks = () => {
+    const nextConfig = normalizeCustomModelConfig({ ...config, manualLandmarks: {} });
+    setConfig(nextConfig);
+    setWizardDirty(true);
+    updateLandmarkMarkersRef.current(nextConfig.manualLandmarks, rigRef.current);
+    renderOnceRef.current?.();
+  };
+
+  const handleWeightPreviewChange = (visible: boolean) => {
+    setShowWeightPreview(visible);
+    rigRef.current?.setWeightPreview(visible);
+    renderOnceRef.current?.();
+  };
+
+  const handleWeightPaintToggle = () => {
+    const enabled = !weightPaintEnabled;
+    setWeightPaintEnabled(enabled);
+    if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
+    if (enabled) {
+      landmarkPickingRef.current = false;
+      setIsPlacingLandmark(false);
+      if (activeAnim !== 'idle') handlePlayAnim('idle');
+      setShowWeightPreview(true);
+      rigRef.current?.setWeightPreview(true);
+    }
+    renderOnceRef.current?.();
+  };
+
+  const handleUndoWeightStroke = () => {
+    const rig = rigRef.current;
+    if (!rig) return;
+    const undone = rig.undoWeightPaintStroke();
+    if (undone > 0) {
+      const nextConfig = normalizeCustomModelConfig(rig.metadata.appliedConfig);
+      setConfig(nextConfig);
+      if (importedBuffer) setCustomHeroConfigOverride(nextConfig);
+      setCanUndoWeights(rig.canUndoWeightPaint);
+      setLastPaintedVertexCount(undone);
+      showToast(`Deshecho: ${undone} vértices restaurados`);
+      renderOnceRef.current?.();
+    }
+  };
+
+  const handleResetWeightEdits = async () => {
+    const nextConfig = normalizeCustomModelConfig({
+      ...config,
+      manualWeightEdits: []
+    });
+    const applied = await rebuildWithConfig(nextConfig, true);
+    if (applied) {
+      setCanUndoWeights(false);
+      setLastPaintedVertexCount(0);
+      showToast('Pesos manuales borrados; se restauraron los pesos calculados');
     }
   };
 
@@ -887,6 +1243,14 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
           : `Auto-Rig (${metadata.boneCount}h)`
       }${autoProf ? ` · ${PROPORTION_LABELS[autoProf.proportionClass] ?? autoProf.proportionClass} · ${POSE_LABELS[autoProf.armPose] ?? autoProf.armPose}` : ''}`
     : 'Editor 3D Universal (.glb / .gltf / .fbx / .obj)';
+  const weightBoneOptions = Array.from(
+    new Set(rigRef.current?.skinnedMesh?.skeleton.bones.map(bone => bone.name) ?? [])
+  );
+  const activeWeightBone =
+    weightBoneOptions.find(name => name === selectedWeightBone) ??
+    weightBoneOptions.find(name => /arm/i.test(name)) ??
+    weightBoneOptions[0] ??
+    '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-[#04060ae6]">
@@ -1099,7 +1463,9 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
             <div
               ref={containerRef}
               data-testid="model-viewer-canvas"
-              className="w-full h-full cursor-grab active:cursor-grabbing select-none"
+              className={`w-full h-full select-none ${
+                isPlacingLandmark ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
+              }`}
             />
 
             {/* Loading Indicator */}
@@ -1330,6 +1696,271 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
                       Ajuste Fino de Huesos (Auto-Rig)
                     </div>
 
+                    <section className="rounded border border-sky-400/30 bg-sky-950/20 p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-[11px] font-bold text-sky-200">Wizard de articulaciones</h3>
+                          <p className="text-[10px] text-slate-400">
+                            {Object.keys(config.manualLandmarks).length}/9 puntos manuales · espejo bilateral
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          aria-expanded={rigWizardOpen}
+                          onClick={() => setRigWizardOpen(open => !open)}
+                          className="rounded border border-sky-300/40 px-2 py-1 text-[10px] font-semibold text-sky-100 hover:bg-sky-900/50 cursor-pointer"
+                        >
+                          {rigWizardOpen ? 'Cerrar' : 'Abrir'}
+                        </button>
+                      </div>
+
+                      {rigWizardOpen && (
+                        <div className="space-y-2">
+                          <label className="block space-y-1">
+                            <span className="text-[10px] text-slate-300">Articulación a colocar</span>
+                            <select
+                              value={selectedLandmark}
+                              onChange={e => {
+                                const option = RIG_LANDMARK_OPTIONS.find(item => item.id === e.target.value);
+                                if (option) handleSelectLandmark(option.id);
+                              }}
+                              className="w-full rounded border border-slate-700 bg-[#101827] px-2 py-1.5 text-[11px] text-slate-100"
+                            >
+                              {RIG_LANDMARK_OPTIONS.map(option => (
+                                <option key={option.id} value={option.id}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <div className="flex items-center justify-between gap-2 text-[10px]">
+                            <span className="text-slate-400">
+                              Punto {RIG_LANDMARK_OPTIONS.findIndex(option => option.id === selectedLandmark) + 1} de 9
+                            </span>
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                disabled={selectedLandmark === RIG_LANDMARK_OPTIONS[0].id}
+                                onClick={() => handleLandmarkStep(-1)}
+                                className="rounded border border-slate-700 px-2 py-1 text-slate-200 disabled:opacity-40 cursor-pointer"
+                              >
+                                Anterior
+                              </button>
+                              <button
+                                type="button"
+                                disabled={selectedLandmark === RIG_LANDMARK_OPTIONS[RIG_LANDMARK_OPTIONS.length - 1].id}
+                                onClick={() => handleLandmarkStep(1)}
+                                className="rounded border border-slate-700 px-2 py-1 text-slate-200 disabled:opacity-40 cursor-pointer"
+                              >
+                                Siguiente
+                              </button>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={handlePlaceLandmark}
+                            className={`w-full rounded px-2 py-1.5 text-[11px] font-bold border cursor-pointer ${
+                              isPlacingLandmark
+                                ? 'bg-amber-500 text-slate-950 border-amber-200'
+                                : 'bg-[#162032] text-sky-100 border-sky-400/40 hover:bg-sky-900/50'
+                            }`}
+                          >
+                            {isPlacingLandmark ? 'Cancelar colocación' : 'Colocar punto en la malla'}
+                          </button>
+                          <p className="text-[10px] leading-relaxed text-slate-400">
+                            Selecciona un punto y haz clic sobre el modelo. El punto se guarda en coordenadas normalizadas;
+                            el lado derecho se refleja automáticamente.
+                          </p>
+
+                          {config.manualLandmarks[selectedLandmark] && (
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {(['x', 'y', 'z'] as const).map(axis => (
+                                <label key={axis} className="space-y-0.5">
+                                  <span className="block text-[9px] uppercase text-slate-400">{axis}</span>
+                                  <input
+                                    type="number"
+                                    aria-label={`${selectedLandmark} ${axis}`}
+                                    min={axis === 'y' ? 0 : axis === 'z' ? -0.4 : -0.7}
+                                    max={axis === 'y' ? 1.1 : axis === 'z' ? 0.4 : 0.7}
+                                    step={0.005}
+                                    value={config.manualLandmarks[selectedLandmark]![axis]}
+                                    onChange={e => {
+                                      const value = e.currentTarget.valueAsNumber;
+                                      if (Number.isFinite(value)) {
+                                        applyManualLandmarkAxis(selectedLandmark, axis, value);
+                                      }
+                                    }}
+                                    className="w-full rounded border border-slate-700 bg-[#101827] px-1.5 py-1 font-mono-num text-[10px] text-slate-100"
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!wizardDirty}
+                              onClick={() => void handleApplyLandmarks()}
+                              className="flex-1 rounded bg-blue-800 px-2 py-1.5 text-[10px] font-bold text-blue-50 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                            >
+                              Aplicar y reconstruir rig
+                            </button>
+                            <button
+                              type="button"
+                              disabled={Object.keys(config.manualLandmarks).length === 0}
+                              onClick={handleResetLandmarks}
+                              aria-label="Borrar landmarks manuales"
+                              title="Borrar puntos manuales"
+                              className="rounded border border-slate-700 px-2 text-slate-300 hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                            >
+                              <RotateCcw size={12} />
+                            </button>
+                          </div>
+                          {wizardDirty && (
+                            <p role="status" className="text-[10px] text-amber-300">
+                              Hay cambios sin aplicar. Se reconstruirá desde el archivo original para evitar deformación acumulada.
+                            </p>
+                          )}
+
+                          <label className="flex items-center gap-2 rounded border border-slate-700/70 px-2 py-1.5 text-[10px] text-slate-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={showWeightPreview}
+                              onChange={e => handleWeightPreviewChange(e.target.checked)}
+                              className="accent-sky-400"
+                            />
+                            Ver influencias: brazo (rojo) / torso (azul)
+                          </label>
+                          <p className="text-[10px] text-slate-400">
+                            Valida luego con Idle, Caminar y Ataque en la barra inferior.
+                          </p>
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="rounded border border-amber-400/30 bg-amber-950/15 p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-[11px] font-bold text-amber-200">Pintura manual de pesos</h3>
+                          <p className="text-[10px] text-slate-400">
+                            {config.manualWeightEdits.length} vértices ajustados
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          aria-pressed={weightPaintEnabled}
+                          onClick={handleWeightPaintToggle}
+                          className={`rounded border px-2 py-1 text-[10px] font-bold cursor-pointer ${
+                            weightPaintEnabled
+                              ? 'border-amber-200 bg-amber-400 text-slate-950'
+                              : 'border-amber-300/40 text-amber-100 hover:bg-amber-900/40'
+                          }`}
+                        >
+                          {weightPaintEnabled ? 'Terminar pincel' : 'Activar pincel'}
+                        </button>
+                      </div>
+
+                      {weightPaintEnabled && (
+                        <div className="space-y-2">
+                          <label className="block space-y-1">
+                            <span className="text-[10px] text-slate-300">Hueso a editar</span>
+                            <select
+                              aria-label="Hueso de pesos"
+                              value={activeWeightBone}
+                              onChange={event => setSelectedWeightBone(event.target.value)}
+                              className="w-full rounded border border-slate-700 bg-[#101827] px-2 py-1.5 text-[11px] text-slate-100"
+                            >
+                              {weightBoneOptions.map(name => (
+                                <option key={name} value={name}>{name}</option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block space-y-1">
+                            <span className="text-[10px] text-slate-300">Operación</span>
+                            <select
+                              aria-label="Modo de pintura de pesos"
+                              value={weightPaintMode}
+                              onChange={event => setWeightPaintMode(event.target.value as SkinWeightPaintMode)}
+                              className="w-full rounded border border-slate-700 bg-[#101827] px-2 py-1.5 text-[11px] text-slate-100"
+                            >
+                              <option value="paint">Pintar influencia</option>
+                              <option value="erase">Reducir influencia</option>
+                              <option value="smooth">Suavizar pesos</option>
+                            </select>
+                          </label>
+
+                          <label className="block space-y-1">
+                            <div className="flex justify-between text-[10px]">
+                              <span className="text-slate-300">Radio del pincel</span>
+                              <span className="font-mono-num text-amber-200">{weightBrushRadius.toFixed(3)} m</span>
+                            </div>
+                            <input
+                              aria-label="Radio del pincel de pesos"
+                              type="range"
+                              min={0.015}
+                              max={0.2}
+                              step={0.005}
+                              value={weightBrushRadius}
+                              onChange={event => setWeightBrushRadius(Number(event.target.value))}
+                              className="w-full accent-amber-400"
+                            />
+                          </label>
+
+                          <label className="block space-y-1">
+                            <div className="flex justify-between text-[10px]">
+                              <span className="text-slate-300">Fuerza</span>
+                              <span className="font-mono-num text-amber-200">{Math.round(weightBrushStrength * 100)}%</span>
+                            </div>
+                            <input
+                              aria-label="Fuerza del pincel de pesos"
+                              type="range"
+                              min={0.05}
+                              max={1}
+                              step={0.05}
+                              value={weightBrushStrength}
+                              onChange={event => setWeightBrushStrength(Number(event.target.value))}
+                              className="w-full accent-amber-400"
+                            />
+                          </label>
+
+                          <label className="flex items-center gap-2 rounded border border-slate-700/70 px-2 py-1.5 text-[10px] text-slate-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={weightMirrorEnabled}
+                              onChange={event => setWeightMirrorEnabled(event.target.checked)}
+                              className="accent-amber-400"
+                            />
+                            Simetría izquierda / derecha
+                          </label>
+
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!canUndoWeights}
+                              onClick={handleUndoWeightStroke}
+                              className="flex-1 rounded border border-slate-700 px-2 py-1.5 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                            >
+                              Deshacer trazo
+                            </button>
+                            <button
+                              type="button"
+                              disabled={config.manualWeightEdits.length === 0}
+                              onClick={() => void handleResetWeightEdits()}
+                              className="flex-1 rounded border border-rose-400/40 px-2 py-1.5 text-[10px] text-rose-200 hover:bg-rose-950/40 disabled:opacity-40 cursor-pointer"
+                            >
+                              Restaurar auto-pesos
+                            </button>
+                          </div>
+                          <p role="status" className="text-[10px] leading-relaxed text-slate-400">
+                            Clic y arrastrá sobre la malla. El pincel usa caída suave; cada trazo puede deshacerse. Guarda y asigna o exporta JSON para conservarlo.
+                            {lastPaintedVertexCount > 0 ? ` Último trazo: ${lastPaintedVertexCount} vértices.` : ''}
+                          </p>
+                        </div>
+                      )}
+                    </section>
+
                     <label className="block space-y-1">
                       <div className="flex justify-between text-[11px]">
                         <span className="text-[#cbd5e1]">Cadera Y</span>
@@ -1398,7 +2029,7 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
                     <button
                       type="button"
-                      onClick={() => void rebuildWithConfig(config)}
+                      onClick={() => void handleApplyLandmarks()}
                       className="w-full py-1.5 rounded bg-[#1e3a8a] hover:bg-[#1d4ed8] text-sky-100 font-bold text-[11px] border border-sky-400/40 cursor-pointer"
                     >
                       Aplicar Ajustes al Rig
