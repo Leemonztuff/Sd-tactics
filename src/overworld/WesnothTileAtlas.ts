@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { WesnothMapData } from './WesnothMapSystem';
-import { computeHexAutoTilePlan } from './WesnothAutoTiler';
+import { computeHexAutoTilePlan, getDirectionalNeighbors } from './WesnothAutoTiler';
 import { getWesnothImage, whenAllWesnothImagesReady } from './WesnothAssetLoader';
 
 export const TILE_PX = 72;
@@ -13,14 +13,25 @@ export interface AtlasLayout {
   cellOrigin(x: number, y: number): { ox: number; oy: number };
 }
 
+export interface ShroudVisibilityState {
+  isDungeon: boolean;
+  explored: Set<string>;
+  visible: Set<string>;
+}
+
 export class WesnothTileAtlas {
   public canvas: HTMLCanvasElement;
   public ctx: CanvasRenderingContext2D;
   public texture: THREE.CanvasTexture;
   public layout: AtlasLayout;
   private disposed = false;
+  private latestVisibility?: ShroudVisibilityState;
 
-  constructor(map: WesnothMapData, onReady?: () => void) {
+  constructor(
+    map: WesnothMapData,
+    onReady?: () => void,
+    initialVisibility?: ShroudVisibilityState
+  ) {
     const atlasW = 2048; // fits up to 25 columns at 80px stride
     const atlasH = 2048; // fits up to 25 rows at 80px stride
 
@@ -50,18 +61,31 @@ export class WesnothTileAtlas {
     this.texture.wrapS = THREE.ClampToEdgeWrapping;
     this.texture.wrapT = THREE.ClampToEdgeWrapping;
 
-    // Paint immediately with any cached images, then repaint once all 102 PNGs finish decoding
-    this.compositeMap(map);
+    this.latestVisibility = initialVisibility;
+
+    // Paint immediately with any cached images, then repaint once all PNGs finish decoding
+    this.compositeMap(map, this.latestVisibility);
     whenAllWesnothImagesReady().then(() => {
       if (this.disposed) return;
-      this.compositeMap(map);
+      this.compositeMap(map, this.latestVisibility);
       onReady?.();
     });
   }
 
-  public compositeMap(map: WesnothMapData) {
+  public updateDungeonVisibility(map: WesnothMapData, visibility: ShroudVisibilityState) {
+    if (this.disposed) return;
+    this.latestVisibility = visibility;
+    this.compositeMap(map, visibility);
+  }
+
+  public compositeMap(map: WesnothMapData, visibility?: ShroudVisibilityState) {
+    this.latestVisibility = visibility;
     const { ctx } = this;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    const isDungeon = Boolean(visibility?.isDungeon);
+    const shroudCenterImg = isDungeon ? getWesnothImage('shroud_void') : undefined;
+    const fogCenterImg = isDungeon ? getWesnothImage('fog_center') : undefined;
 
     for (let y = 0; y < map.height; y++) {
       for (let x = 0; x < map.width; x++) {
@@ -69,6 +93,18 @@ export class WesnothTileAtlas {
         if (!tile) continue;
 
         const { ox, oy } = this.layout.cellOrigin(x, y);
+        const key = `${x},${y}`;
+
+        // Unexplored dungeon hex: solid pitch-black Shroud (#000000), zero spoiler pixels
+        if (isDungeon && visibility && !visibility.explored.has(key)) {
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(ox - 3, oy - 3, TILE_PX + 6, TILE_PX + 6);
+          if (shroudCenterImg && shroudCenterImg.complete && shroudCenterImg.naturalWidth > 0) {
+            ctx.drawImage(shroudCenterImg, ox, oy, TILE_PX, TILE_PX);
+          }
+          continue;
+        }
+
         const plan = computeHexAutoTilePlan(map, x, y);
 
         // Fallback biome fill color to prevent any sub-pixel edge gaps
@@ -77,7 +113,7 @@ export class WesnothTileAtlas {
 
         const baseImg = getWesnothImage(plan.baseAsset);
         if (baseImg && baseImg.complete && baseImg.naturalWidth > 0) {
-          // Slight 2px bleed underneath prevents any transparent border fringe on hex corners
+          // Slight bleed underneath prevents transparent border fringe on hex corners
           ctx.drawImage(baseImg, ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
           ctx.drawImage(baseImg, ox, oy, TILE_PX, TILE_PX);
         }
@@ -93,15 +129,9 @@ export class WesnothTileAtlas {
         // Apply calibrated biome grading (Frostpeaks, Sunfire Dunes, Ashen Caldera, Magma)
         if (tile.terrain.baseCode === 'Qlf') {
           ctx.save();
-          ctx.fillStyle = '#36100a';
+          ctx.globalAlpha = 0.16;
+          ctx.fillStyle = '#fb923c';
           ctx.fillRect(ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
-          ctx.fillStyle = '#d9480f';
-          ctx.fillRect(ox + 10, oy + 14, 52, 8);
-          ctx.fillRect(ox + 18, oy + 34, 40, 7);
-          ctx.fillRect(ox + 12, oy + 50, 44, 6);
-          ctx.fillStyle = '#facc15';
-          ctx.fillRect(ox + 18, oy + 16, 26, 3);
-          ctx.fillRect(ox + 26, oy + 36, 22, 3);
           ctx.restore();
         } else if (tile.terrain.biomeTint && tile.terrain.biomeTintAlpha) {
           ctx.save();
@@ -109,6 +139,41 @@ export class WesnothTileAtlas {
           ctx.fillStyle = tile.terrain.biomeTint;
           ctx.fillRect(ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
           ctx.restore();
+        }
+
+        if (isDungeon && visibility) {
+          // Wesnoth shroud-void edge transitions wherever an explored hex borders unexplored blackness
+          const neighbors = getDirectionalNeighbors(map, x, y);
+          for (const { dir, coord } of neighbors) {
+            const nbKey = `${coord.x},${coord.y}`;
+            if (!visibility.explored.has(nbKey)) {
+              const svImg = getWesnothImage(`shroud_void_${dir}`);
+              if (svImg && svImg.complete && svImg.naturalWidth > 0) {
+                ctx.drawImage(svImg, ox, oy, TILE_PX, TILE_PX);
+              }
+            }
+          }
+
+          const isVisible = visibility.visible.has(key);
+          if (!isVisible) {
+            // Explored but out of torchlight LoS -> Dark Fog of War (legible dim slate vs pure #000000 Shroud)
+            if (fogCenterImg && fogCenterImg.complete && fogCenterImg.naturalWidth > 0) {
+              ctx.save();
+              ctx.globalAlpha = 0.45;
+              ctx.drawImage(fogCenterImg, ox, oy, TILE_PX, TILE_PX);
+              ctx.restore();
+            }
+            ctx.save();
+            ctx.fillStyle = 'rgba(4, 8, 16, 0.42)';
+            ctx.fillRect(ox - 2, oy - 2, TILE_PX + 4, TILE_PX + 4);
+            ctx.restore();
+          } else if (!tile.terrain.isWall && !tile.terrain.isChasm) {
+            // Subtle warm hero torchlight glaze inside visible dungeon halls
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 204, 128, 0.1)';
+            ctx.fillRect(ox - 1, oy - 1, TILE_PX + 2, TILE_PX + 2);
+            ctx.restore();
+          }
         }
       }
     }

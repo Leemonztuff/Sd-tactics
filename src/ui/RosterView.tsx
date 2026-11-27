@@ -6,9 +6,17 @@ import { soundManager } from '../utils/SoundManager';
 import { JobId } from '../types/game';
 import { ArrowLeft, Lock, ShoppingBag, Eye } from 'lucide-react';
 import { JOB_ACCENT } from './brand/BrandKit';
-import { JobCrestGlyph } from './brand/ValenIcons';
+import { WesnothIcon } from './brand/WesnothIcon';
 import { ValenMeter } from './brand/ValenMeter';
 import { ModelViewerModal } from './ModelViewerModal';
+import {
+  PASSIVE_WESNOTH_ICON,
+  REACTION_WESNOTH_ICON,
+  UI_WESNOTH_ICONS,
+  getAbilityWesnothIcon,
+  getItemWesnothIcon,
+  getJobWesnothIcon
+} from '../overworld/WesnothIconRegistry';
 
 interface Props {
   onUpdate: () => void;
@@ -66,7 +74,10 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
             <span className="text-sky-300 font-semibold">
               Squad: {activeSquadIds.length}/4
             </span>
-            <span className="text-[#f3cf7a] font-bold">Gold: {game.saveData.gold} G</span>
+            <span className="text-[#f3cf7a] font-bold flex items-center gap-1.5">
+              <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={18} />
+              <span>{game.saveData.gold} G</span>
+            </span>
           </div>
         </header>
 
@@ -96,8 +107,14 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                   }`}
                 >
                   <div className="flex justify-between items-center gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <JobCrestGlyph jobId={hero.jobId} className="w-5 h-5 shrink-0" />
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <WesnothIcon
+                        assetKey={getJobWesnothIcon(hero.jobId)}
+                        alt={job.name}
+                        size={30}
+                        framed
+                        frameTone={isSelected ? 'gold' : 'steel'}
+                      />
                       <span className="font-display font-bold text-base sm:text-lg text-[#f6eedb] truncate">
                         {hero.name}
                       </span>
@@ -139,9 +156,13 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
               {/* Hero Summary */}
               <div className="flex flex-wrap justify-between items-start gap-4">
                 <div className="flex items-center gap-3.5">
-                  <div className="w-12 h-12 valen-plaque-quiet valen-bevel flex items-center justify-center shrink-0">
-                    <JobCrestGlyph jobId={selectedHero.jobId} className="w-7 h-7" />
-                  </div>
+                  <WesnothIcon
+                    assetKey={getJobWesnothIcon(selectedHero.jobId)}
+                    alt={JOBS[selectedHero.jobId].name}
+                    size={50}
+                    framed
+                    frameTone="gold"
+                  />
                   <div>
                     <h2 className="font-display text-2xl font-bold text-[#f6eedb]">
                       {selectedHero.name}
@@ -258,7 +279,7 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                               game.changeHeroJob(selectedHero.id, jobId);
                               onUpdate();
                             }}
-                            className={`p-3 valen-bevel text-left transition-colors ${
+                            className={`p-3 valen-bevel text-left flex items-start gap-3 transition-colors ${
                               isCurrent
                                 ? 'border border-[#d89b32] bg-[#d89b32]/15 cursor-default'
                                 : unlocked
@@ -266,25 +287,77 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                                   : 'border border-white/10 bg-[#090d16]/70 opacity-55 cursor-not-allowed'
                             }`}
                           >
-                            <div className="flex justify-between items-center gap-2">
-                              <span className="flex items-center gap-2 font-semibold text-sm text-[#f6eedb]">
-                                <JobCrestGlyph jobId={jobId} className="w-4 h-4 shrink-0" />
-                                {job.name}
-                              </span>
-                              {isCurrent ? (
-                                <span className="text-xs text-[#f3cf7a] font-bold">Active</span>
-                              ) : !unlocked ? (
-                                <Lock size={13} className="text-[#8a99b3]" />
-                              ) : (
-                                <span className="text-xs text-sky-400 font-semibold">Switch</span>
-                              )}
+                            <WesnothIcon
+                              assetKey={getJobWesnothIcon(jobId)}
+                              alt={job.name}
+                              size={38}
+                              framed
+                              frameTone={isCurrent ? 'gold' : 'steel'}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex justify-between items-center gap-2">
+                                <span className="font-semibold text-sm text-[#f6eedb] truncate">
+                                  {job.name}
+                                </span>
+                                {isCurrent ? (
+                                  <span className="text-xs text-[#f3cf7a] font-bold shrink-0">Active</span>
+                                ) : !unlocked ? (
+                                  <Lock size={13} className="text-[#8a99b3] shrink-0" />
+                                ) : (
+                                  <span className="text-xs text-sky-400 font-semibold shrink-0">Switch</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-[#8a99b3] mt-1">
+                                {unlocked ? job.description : `Requires: ${reqText}`}
+                              </p>
                             </div>
-                            <p className="text-xs text-[#8a99b3] mt-1">
-                              {unlocked ? job.description : `Requires: ${reqText}`}
-                            </p>
                           </button>
                         );
                       })}
+                    </div>
+                  </div>
+
+                  {/* Innate Passive & Reaction Skills */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="valen-plaque-quiet valen-bevel p-3 flex items-center gap-3">
+                      <WesnothIcon
+                        assetKey={PASSIVE_WESNOTH_ICON[selectedHero.jobId]}
+                        alt={JOBS[selectedHero.jobId].passiveSkill.name}
+                        size={38}
+                        framed
+                        frameTone="emerald"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-400">
+                          Passive Skill
+                        </div>
+                        <div className="text-sm font-semibold text-[#f6eedb] truncate">
+                          {JOBS[selectedHero.jobId].passiveSkill.name}
+                        </div>
+                        <div className="text-xs text-[#8a99b3] mt-0.5">
+                          {JOBS[selectedHero.jobId].passiveSkill.description}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="valen-plaque-quiet valen-bevel p-3 flex items-center gap-3">
+                      <WesnothIcon
+                        assetKey={REACTION_WESNOTH_ICON[selectedHero.jobId]}
+                        alt={JOBS[selectedHero.jobId].reactionSkill.name}
+                        size={38}
+                        framed
+                        frameTone="astral"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-400">
+                          Reaction Skill
+                        </div>
+                        <div className="text-sm font-semibold text-[#f6eedb] truncate">
+                          {JOBS[selectedHero.jobId].reactionSkill.name}
+                        </div>
+                        <div className="text-xs text-[#8a99b3] mt-0.5">
+                          {JOBS[selectedHero.jobId].reactionSkill.description}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -299,16 +372,35 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                         if (!ab) return null;
                         const isLearned = selectedHero.unlockedAbilities.includes(abId);
                         const isEquipped = selectedHero.equippedAbilities.includes(abId);
+                        const frameTone =
+                          ab.element === 'fire'
+                            ? 'crimson'
+                            : ab.type === 'heal' || ab.element === 'venom' || ab.element === 'acid'
+                              ? 'emerald'
+                              : ab.element === 'astral'
+                                ? 'astral'
+                                : ab.element === 'solar' || ab.type === 'buff'
+                                  ? 'gold'
+                                  : 'steel';
 
                         return (
                           <div
                             key={abId}
                             className="py-3 flex items-center justify-between gap-3"
                           >
-                            <div>
-                              <div className="text-sm font-semibold text-[#f6eedb]">{ab.name}</div>
-                              <div className="text-xs text-[#8a99b3] font-mono-num mt-0.5">
-                                {ab.description.replace(/\.$/, '')} · {ab.mpCost} MP · Rng {ab.range}
+                            <div className="flex items-center gap-3 min-w-0">
+                              <WesnothIcon
+                                assetKey={getAbilityWesnothIcon(abId)}
+                                alt={ab.name}
+                                size={42}
+                                framed
+                                frameTone={frameTone}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-[#f6eedb]">{ab.name}</div>
+                                <div className="text-xs text-[#8a99b3] font-mono-num mt-0.5">
+                                  {ab.description.replace(/\.$/, '')} · {ab.mpCost} MP · Rng {ab.range}
+                                </div>
                               </div>
                             </div>
                             {isLearned ? (
@@ -367,23 +459,40 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                           <div className="text-[11px] text-[#8a99b3] uppercase tracking-[0.16em]">
                             {slot}
                           </div>
-                          <div className="font-semibold text-sm text-[#f6eedb]">
-                            {equippedItem ? equippedItem.name : 'None Equipped'}
+                          <div className="flex items-center gap-3">
+                            {equippedItem ? (
+                              <WesnothIcon
+                                assetKey={getItemWesnothIcon(equippedItem.id)}
+                                alt={equippedItem.name}
+                                size={42}
+                                framed
+                                frameTone="gold"
+                              />
+                            ) : (
+                              <span className="w-[42px] h-[42px] valen-plaque-quiet valen-bevel inline-flex items-center justify-center text-[11px] text-[#8a99b3]">
+                                —
+                              </span>
+                            )}
+                            <div className="min-w-0">
+                              <div className="font-semibold text-sm text-[#f6eedb] truncate">
+                                {equippedItem ? equippedItem.name : 'None Equipped'}
+                              </div>
+                              {equippedItem && (
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.currentTarget.blur();
+                                    soundManager.playClick();
+                                    game.equipRosterItem(selectedHero.id, null, slot);
+                                    onUpdate();
+                                  }}
+                                  className="text-xs text-rose-400 hover:underline cursor-pointer"
+                                >
+                                  Unequip
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          {equippedItem && (
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.currentTarget.blur();
-                                soundManager.playClick();
-                                game.equipRosterItem(selectedHero.id, null, slot);
-                                onUpdate();
-                              }}
-                              className="text-xs text-rose-400 hover:underline cursor-pointer"
-                            >
-                              Unequip
-                            </button>
-                          )}
 
                           <div className="valen-divider" />
                           <div className="space-y-1.5">
@@ -405,10 +514,19 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                                       game.equipRosterItem(selectedHero.id, inv.itemId, slot);
                                       onUpdate();
                                     }}
-                                    className="w-full text-left px-2.5 py-1.5 valen-btn-steel valen-bevel text-xs flex justify-between items-center cursor-pointer"
+                                    className="w-full text-left px-2.5 py-1.5 valen-btn-steel valen-bevel text-xs flex justify-between items-center gap-2 cursor-pointer"
                                   >
-                                    <span>{it.name}</span>
-                                    <span className="font-mono-num text-[#f3cf7a]">×{inv.count}</span>
+                                    <span className="flex items-center gap-2 min-w-0">
+                                      <WesnothIcon
+                                        assetKey={getItemWesnothIcon(inv.itemId)}
+                                        alt={it.name}
+                                        size={24}
+                                        framed
+                                        frameTone="steel"
+                                      />
+                                      <span className="truncate">{it.name}</span>
+                                    </span>
+                                    <span className="font-mono-num text-[#f3cf7a] shrink-0">×{inv.count}</span>
                                   </button>
                                 );
                               })
@@ -421,10 +539,11 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
 
                   <div className="valen-divider" />
 
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-[#8a99b3] uppercase tracking-[0.16em] font-semibold">
-                        Shared Battle Bag
+                      <span className="text-[#8a99b3] uppercase tracking-[0.16em] font-semibold flex items-center gap-2">
+                        <WesnothIcon assetKey={UI_WESNOTH_ICONS.bag} alt="Battle Bag" size={18} />
+                        <span>Shared Battle Bag</span>
                       </span>
                       <span className="text-[#8a99b3]">Usable by any deployed hero in combat</span>
                     </div>
@@ -433,13 +552,26 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                         No consumables in Battle Bag. Visit Armory Shop to restock.
                       </div>
                     ) : (
-                      <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
-                        {consumables.map(entry => (
-                          <div key={entry.itemId}>
-                            <span className="font-semibold text-[#f6eedb]">{ITEMS[entry.itemId]?.name}</span>{' '}
-                            <span className="font-mono-num text-emerald-300 font-bold">×{entry.count}</span>
-                          </div>
-                        ))}
+                      <div className="flex flex-wrap gap-4 text-xs">
+                        {consumables.map(entry => {
+                          const item = ITEMS[entry.itemId];
+                          if (!item) return null;
+                          return (
+                            <div key={entry.itemId} className="flex items-center gap-2.5">
+                              <WesnothIcon
+                                assetKey={getItemWesnothIcon(entry.itemId)}
+                                alt={item.name}
+                                size={32}
+                                framed
+                                frameTone={item.consumableEffect?.damage ? 'crimson' : 'emerald'}
+                              />
+                              <div>
+                                <div className="font-semibold text-[#f6eedb]">{item.name}</div>
+                                <div className="font-mono-num text-emerald-300 font-bold">×{entry.count}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -452,19 +584,37 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                   {Object.values(ITEMS).map(item => {
                     const owned = game.saveData.inventory.find(i => i.itemId === item.id)?.count ?? 0;
                     const canAfford = game.saveData.gold >= item.price;
+                    const tone =
+                      item.type === 'weapon'
+                        ? 'gold'
+                        : item.type === 'consumable'
+                          ? item.consumableEffect?.damage
+                            ? 'crimson'
+                            : 'emerald'
+                          : 'steel';
+
                     return (
                       <div
                         key={item.id}
                         className="py-3 flex items-center justify-between gap-4"
                       >
-                        <div>
-                          <div className="text-sm font-semibold text-[#f6eedb]">
-                            {item.name}{' '}
-                            {owned > 0 && (
-                              <span className="text-xs text-emerald-400 font-mono-num">(Owned {owned})</span>
-                            )}
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <WesnothIcon
+                            assetKey={getItemWesnothIcon(item.id)}
+                            alt={item.name}
+                            size={44}
+                            framed
+                            frameTone={tone}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-[#f6eedb] flex items-center gap-2 flex-wrap">
+                              <span>{item.name}</span>
+                              {owned > 0 && (
+                                <span className="text-xs text-emerald-400 font-mono-num">(Owned {owned})</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-[#8a99b3] mt-0.5">{item.description}</div>
                           </div>
-                          <div className="text-xs text-[#8a99b3] mt-0.5">{item.description}</div>
                         </div>
                         <button
                           type="button"
@@ -475,9 +625,10 @@ export const RosterView: React.FC<Props> = ({ onUpdate }) => {
                             game.buyShopItem(item.id);
                             onUpdate();
                           }}
-                          className="px-4 py-2 valen-btn-gold valen-bevel disabled:opacity-40 text-xs font-bold font-mono-num shrink-0 cursor-pointer"
+                          className="px-3.5 py-2 valen-btn-gold valen-bevel disabled:opacity-40 text-xs font-bold font-mono-num shrink-0 flex items-center gap-1.5 cursor-pointer"
                         >
-                          {item.price} G
+                          <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={14} />
+                          <span>{item.price} G</span>
                         </button>
                       </div>
                     );

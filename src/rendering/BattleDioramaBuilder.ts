@@ -35,12 +35,38 @@ export interface BiomePalette {
 }
 
 export function resolveBattleBiome(elevationSeed: number): BattleBiome {
+  if (elevationSeed >= 400) return 'dungeon';
   if (elevationSeed === 2) return 'ruins';
   if (elevationSeed >= 3) return 'caldera';
   return 'lowlands';
 }
 
 export function getBiomePalette(biome: BattleBiome): BiomePalette {
+  if (biome === 'dungeon') {
+    return {
+      biome,
+      bgHex: 0x05070c,
+      fogDensity: 0.0175,
+      sunColor: 0xffd7a3,
+      sunIntensity: 1.08,
+      hemiSky: 0x475569,
+      hemiGround: 0x161b26,
+      hemiIntensity: 0.56,
+      rimColor: 0xf59e0b,
+      plinthHex: 0x0c1018,
+      rimBoardHex: 0x1e2533,
+      pedestalHex: 0x262b36,
+      grassTopHex: 0x4b5568,
+      grassAltHex: 0x3e4657,
+      highTopHex: 0x626c80,
+      stoneTopHex: 0x586275,
+      waterHex: 0x0369a1,
+      mudHex: 0x3a2e2a,
+      hazardHex: 0xf97316,
+      hazardGlowHex: 0xea580c,
+      rockHex: 0x1b202b
+    };
+  }
   if (biome === 'ruins') {
     return {
       biome,
@@ -219,13 +245,34 @@ function createCompositeObstacle(
 ): THREE.Group {
   const g = new THREE.Group();
   const stoneMat = new THREE.MeshToonMaterial({
-    color: biome === 'caldera' ? 0x453b54 : biome === 'ruins' ? 0xb5a88d : 0x7d8a9e,
+    color:
+      biome === 'caldera'
+        ? 0x453b54
+        : biome === 'dungeon'
+          ? 0x4b5568
+          : biome === 'ruins'
+            ? 0xb5a88d
+            : 0x7d8a9e,
     gradientMap
   });
   const trimMat = new THREE.MeshStandardMaterial({
-    color: biome === 'caldera' ? 0xf97316 : biome === 'ruins' ? 0xeab308 : 0x38bdf8,
-    emissive: biome === 'caldera' ? 0xea580c : biome === 'ruins' ? 0xa16207 : 0x0284c7,
-    emissiveIntensity: 0.45,
+    color:
+      biome === 'caldera'
+        ? 0xf97316
+        : biome === 'dungeon'
+          ? 0xf59e0b
+          : biome === 'ruins'
+            ? 0xeab308
+            : 0x38bdf8,
+    emissive:
+      biome === 'caldera'
+        ? 0xea580c
+        : biome === 'dungeon'
+          ? 0xd97706
+          : biome === 'ruins'
+            ? 0xa16207
+            : 0x0284c7,
+    emissiveIntensity: biome === 'dungeon' ? 0.65 : 0.45,
     roughness: 0.25,
     metalness: 0.45
   });
@@ -237,7 +284,20 @@ function createCompositeObstacle(
     ol.visible = outlinesEnabled;
   };
 
-  if (biome === 'caldera') {
+  if (biome === 'dungeon') {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.2, 0.76), stoneMat);
+    base.position.y = 0.1;
+    const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.74, 0.54), stoneMat);
+    shaft.position.y = 0.55;
+    const ironBand = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.11, 0.62), trimMat);
+    ironBand.position.y = 0.74;
+    const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.2, 0.18, 6), stoneMat);
+    bowl.position.y = 1.0;
+    const flame = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), trimMat);
+    flame.position.y = 1.24;
+    [base, shaft, ironBand, bowl, flame].forEach(p => addOl(p));
+    g.add(base, shaft, ironBand, bowl, flame);
+  } else if (biome === 'caldera') {
     const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.45, 0.22, 6), stoneMat);
     plinth.position.y = 0.11;
     const spire = new THREE.Mesh(new THREE.ConeGeometry(0.31, 0.96, 6), stoneMat);
@@ -290,13 +350,34 @@ function createPerimeterLandmark(
 ): THREE.Group {
   const g = new THREE.Group();
   const moundMat = new THREE.MeshLambertMaterial({
-    color: biome === 'caldera' ? 0x2c2238 : biome === 'ruins' ? 0x4f5248 : 0x2c5c39
+    color:
+      biome === 'caldera'
+        ? 0x2c2238
+        : biome === 'dungeon'
+          ? 0x1b202b
+          : biome === 'ruins'
+            ? 0x4f5248
+            : 0x2c5c39
   });
   const mound = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.78, 0.14, 7), moundMat);
   mound.position.y = 0.05;
   g.add(mound);
 
-  if (biome === 'lowlands') {
+  if (biome === 'dungeon') {
+    // Subterranean Dungeon Torch Brazier & Crypt Column
+    const stoneMat = new THREE.MeshLambertMaterial({ color: 0x3b4252 });
+    const ironMat = new THREE.MeshLambertMaterial({ color: 0x1f2937 });
+    const flameMat = new THREE.MeshBasicMaterial({ color: variant % 2 === 0 ? 0xf59e0b : 0xfbbf24 });
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.24, 0.48), stoneMat);
+    plinth.position.y = 0.18;
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.19, 0.72, 6), stoneMat);
+    shaft.position.y = 0.65;
+    const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.16, 0.18, 6), ironMat);
+    bowl.position.y = 1.08;
+    const flame = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), flameMat);
+    flame.position.y = 1.28;
+    g.add(plinth, shaft, bowl, flame);
+  } else if (biome === 'lowlands') {
     // Composite Brawl-style Layered Pine / Oak Tree on mossy mound
     const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5c3e2a });
     const leafMat = new THREE.MeshToonMaterial({
@@ -360,9 +441,14 @@ export function buildBattleDiorama(
   const disposableTextures: THREE.Texture[] = [];
 
   const gradientMap = getBrawlToonGradientTexture();
-  const grassTex = createSurfaceTexture('#ffffff', '#2d5e2f', 'grass', anisotropy);
-  const stoneTex = createSurfaceTexture('#ffffff', '#475569', 'stone', anisotropy);
-  const cliffTex = createSurfaceTexture('#ffffff', '#332924', 'cliff', anisotropy);
+  const grassTex = createSurfaceTexture(
+    '#ffffff',
+    biome === 'dungeon' ? '#1e2430' : '#2d5e2f',
+    biome === 'dungeon' ? 'stone' : 'grass',
+    anisotropy
+  );
+  const stoneTex = createSurfaceTexture('#ffffff', biome === 'dungeon' ? '#1e293b' : '#475569', 'stone', anisotropy);
+  const cliffTex = createSurfaceTexture('#ffffff', biome === 'dungeon' ? '#111827' : '#332924', 'cliff', anisotropy);
   const waterTex = createSurfaceTexture('#0ea5e9', '#bae6fd', 'water', anisotropy);
   const hazardTex = createSurfaceTexture('#2e1310', '#f97316', 'hazard', anisotropy);
   disposableTextures.push(grassTex, stoneTex, cliffTex, waterTex, hazardTex);
@@ -394,7 +480,14 @@ export function buildBattleDiorama(
   const bollardCapMat = new THREE.MeshStandardMaterial({ color: 0xc98b2c, roughness: 0.35, metalness: 0.55 });
   const lanternGeo = new THREE.OctahedronGeometry(0.11, 0);
   const lanternMat = new THREE.MeshBasicMaterial({
-    color: biome === 'caldera' ? 0xf97316 : biome === 'ruins' ? 0xfacc15 : 0x38bdf8
+    color:
+      biome === 'caldera'
+        ? 0xf97316
+        : biome === 'dungeon'
+          ? 0xf59e0b
+          : biome === 'ruins'
+            ? 0xfacc15
+            : 0x38bdf8
   });
   const hw = grid.width / 2 + 0.24;
   const hh = grid.height / 2 + 0.24;
@@ -517,7 +610,14 @@ export function buildBattleDiorama(
     group.add(inst);
   };
 
-  buildCapLayer(grassTiles, matGrass, pal.grassTopHex, pal.grassAltHex, 0.13, 0);
+  buildCapLayer(
+    grassTiles,
+    biome === 'dungeon' ? matStone : matGrass,
+    pal.grassTopHex,
+    pal.grassAltHex,
+    0.13,
+    0
+  );
   buildCapLayer(stoneTiles, matStone, 0xffffff, 0xe8edf2, 0.13, 0);
   buildCapLayer(highTiles, matHigh, 0xffffff, 0xe8f0da, 0.14, 0.01);
   buildCapLayer(mudTiles, matMud, 0xffffff, 0xe0cbb8, 0.11, -0.02);
@@ -525,7 +625,7 @@ export function buildBattleDiorama(
   buildCapLayer(hazardTiles, matHazard, 0xffffff, null, 0.13, 0);
 
   // Subtle decorative grass/pebble tufts along grass edge tiles for tactile depth
-  if (biome !== 'caldera' && grassTiles.length > 0) {
+  if (biome !== 'caldera' && biome !== 'dungeon' && grassTiles.length > 0) {
     const tuftTiles = grassTiles.filter(
       t => !t.hasObstacle && !t.occupantId && (t.x * 7 + t.z * 11) % 5 === 0
     );

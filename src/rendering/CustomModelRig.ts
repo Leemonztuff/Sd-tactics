@@ -1307,7 +1307,7 @@ export function applyAnatomicalSkinWeights(
     const accum = new Float32Array(18);
 
     // 1. Head isolation above neckY (prevents ears/hair/halos from attaching to arms)
-    const wHead = smoothstep(layout.neckY - 0.025, layout.neckY + 0.035, y);
+    const wHead = smoothstep(layout.neckY - 0.09, layout.neckY - 0.01, y);
 
     // 1b. Rear appendage factor (isolates wings, cloaks, long back hair to torso/chest instead of arms)
     let rearFade = 1.0;
@@ -1320,9 +1320,9 @@ export function applyAnatomicalSkinWeights(
       rearFactor = 1 - rearFade;
     }
 
-    // 2. Arm domain mask (covers full vertical sleeve depth down to armMinY, excluding rear wings)
+    // 2. Arm domain mask (covers sleeves up to neckY - 0.05, keeping arms completely away from head/ears)
     let armMask = 0;
-    if (y >= layout.armMinY - 0.08 && y <= layout.neckY + 0.02) {
+    if (y >= layout.armMinY - 0.08 && y <= layout.neckY - 0.05) {
       const lateralMask = smoothstep(armStartX - 0.015, armStartX + 0.04, ax);
       const lowFade = smoothstep(layout.armMinY - 0.08, layout.armMinY - 0.01, y);
       armMask = lateralMask * lowFade * (1 - wHead) * rearFade;

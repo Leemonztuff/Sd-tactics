@@ -115,6 +115,20 @@ function getBiomeWeatherProfile(
   if (cat === 'volcanic' || cat === 'lava') {
     return { fogHex: 0x7d4c3e, moteHex: 0xf59e42, vy: 0.28, windScale: 0.75 };
   }
+  if (cat === 'chasm') {
+    return { fogHex: 0x0f172a, moteHex: 0xf97316, vy: 0.14, windScale: 0.4 };
+  }
+  if (cat === 'dungeon') {
+    return { fogHex: 0x1e293b, moteHex: 0xfdba74, vy: 0.07, windScale: 0.32 };
+  }
+  if (cat === 'cave') {
+    return {
+      fogHex: 0x262e3d,
+      moteHex: overlay === 'mushrooms' ? 0x6ee7b7 : 0xfbbf24,
+      vy: 0.06,
+      windScale: 0.3
+    };
+  }
   if (cat === 'sand') {
     return { fogHex: 0xc9a574, moteHex: 0xe8bd76, vy: -0.04, windScale: 1.35 };
   }
@@ -159,15 +173,18 @@ export class OverworldWeatherSystem {
       maxZ: maxWorld.wz + 2.0
     };
 
-    // Collect non-deep-water tiles so wisps and motes stay anchored over terrain & coastlines
-    // instead of floating like bright dots over the dark outer ocean void.
+    // Collect non-deep-water / non-wall tiles so wisps and motes stay anchored over active corridors & coastlines
     const activeTiles: Array<{ wx: number; wz: number; cat: string; overlay: string }> = [];
+    let isDungeon = false;
     for (let y = 0; y < map.height; y++) {
       for (let x = 0; x < map.width; x++) {
         const tile = map.tiles[y]?.[x];
         if (!tile) continue;
         const cat = tile.terrain.baseCategory;
-        if (cat === 'deep_water') continue;
+        if (cat === 'dungeon' || cat === 'cave' || cat === 'wall' || cat === 'chasm') {
+          isDungeon = true;
+        }
+        if (cat === 'deep_water' || cat === 'wall') continue;
         const { wx, wz } = hexToWorld(x, y);
         activeTiles.push({
           wx,
@@ -238,7 +255,7 @@ export class OverworldWeatherSystem {
     this.fogGeo.setAttribute('position', new THREE.BufferAttribute(fogPositions, 3));
     this.fogGeo.setAttribute('color', new THREE.BufferAttribute(fogColors, 3));
     this.fogGeo.setAttribute('aAlpha', new THREE.BufferAttribute(fogAlphas, 1));
-    this.fogMat = createWeatherShaderMaterial(this.fogTex, 5.8, 0.16, THREE.NormalBlending);
+    this.fogMat = createWeatherShaderMaterial(this.fogTex, 5.8, isDungeon ? 0.06 : 0.16, THREE.NormalBlending);
     this.fogPoints = new THREE.Points(this.fogGeo, this.fogMat);
     this.fogPoints.frustumCulled = false;
 

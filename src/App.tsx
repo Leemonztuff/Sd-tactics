@@ -153,6 +153,29 @@ export default function App() {
             if (game.overworldManager?.pendingEncounter) {
               e.preventDefault();
               game.engagePendingEncounter();
+            } else if (game.overworldManager?.pendingRuin) {
+              e.preventDefault();
+              const ruin = game.overworldManager.pendingRuin;
+              const unlockedTarget = game.overworldManager.unlockedDungeonFloors.has(ruin.recommendedFloor)
+                ? ruin.recommendedFloor
+                : 1;
+              game.enterDungeonFromRuin(unlockedTarget);
+            } else if (game.overworldManager?.pendingTrap) {
+              e.preventDefault();
+              game.dismissPendingTrap();
+            } else if (game.overworldManager?.pendingDungeonTreasure) {
+              e.preventDefault();
+              game.resolvePendingDungeonTreasure();
+            } else if (game.overworldManager?.pendingDungeonAlly) {
+              e.preventDefault();
+              game.resolvePendingDungeonAlly();
+            } else if (game.overworldManager?.pendingStairs) {
+              e.preventDefault();
+              if (game.overworldManager.pendingStairs.blockedByWardenName) {
+                game.dismissPendingStairs();
+              } else {
+                game.confirmStairsTransition();
+              }
             } else if (game.overworldManager?.pendingPoi) {
               e.preventDefault();
               game.resolvePendingPoi();
@@ -181,6 +204,12 @@ export default function App() {
           case 'Escape':
             if (game.overworldManager?.pendingEncounter) {
               game.evadePendingEncounter();
+            } else if (game.overworldManager?.pendingRuin) {
+              game.dismissPendingRuin();
+            } else if (game.overworldManager?.pendingTrap) {
+              game.dismissPendingTrap();
+            } else if (game.overworldManager?.pendingStairs) {
+              game.dismissPendingStairs();
             } else if (game.overworldManager?.pendingWorldEvent) {
               game.dismissPendingWorldEvent();
             } else {

@@ -16,9 +16,16 @@ import {
   Eye
 } from 'lucide-react';
 import { ELEMENT_STYLE, STATUS_LABEL } from './brand/BrandKit';
-import { ActionGlyph, ElementGlyph, JobCrestGlyph } from './brand/ValenIcons';
+import { ActionGlyph, ElementGlyph } from './brand/ValenIcons';
+import { WesnothIcon } from './brand/WesnothIcon';
 import { ValenMeter } from './brand/ValenMeter';
 import { ModelViewerModal } from './ModelViewerModal';
+import {
+  UI_WESNOTH_ICONS,
+  getAbilityWesnothIcon,
+  getItemWesnothIcon,
+  getJobWesnothIcon
+} from '../overworld/WesnothIconRegistry';
 
 interface Props {
   onUpdate: () => void;
@@ -42,6 +49,14 @@ function getAbilityElement(abId: string): SkillVfxElement {
   if (ab.element) return ab.element;
   if (ab.type === 'heal') return 'heal';
   if (ab.type === 'buff') return 'buff';
+  return 'steel';
+}
+
+function getElementFrameTone(elem: SkillVfxElement): 'steel' | 'gold' | 'emerald' | 'crimson' | 'astral' {
+  if (elem === 'fire') return 'crimson';
+  if (elem === 'heal' || elem === 'acid' || elem === 'venom') return 'emerald';
+  if (elem === 'astral') return 'astral';
+  if (elem === 'solar' || elem === 'buff') return 'gold';
   return 'steel';
 }
 
@@ -258,7 +273,7 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
           </div>
         </div>
 
-        {/* CT Turn Order Segmented Strip (No pill borders around every chip) */}
+        {/* CT Turn Order Segmented Strip */}
         <div className="valen-plaque valen-bevel px-3 py-1.5 pointer-events-auto flex items-center gap-2">
           <span className="text-[10px] font-semibold text-[#8a99b3] uppercase tracking-[0.18em] hidden sm:inline">
             CT Order
@@ -268,7 +283,7 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
               <div
                 key={`${entry.entity.id}_${idx}`}
                 title={`${entry.entity.name} · SPD ${entry.entity.stats.spd} · CT ${entry.projectedCt}`}
-                className={`px-2 py-0.5 text-[11px] font-semibold font-mono-num relative ${
+                className={`px-2 py-0.5 text-[11px] font-semibold font-mono-num relative flex items-center gap-1 ${
                   idx === 0
                     ? 'bg-[#d89b32]/20 text-[#f3cf7a] border-b-2 border-[#f3cf7a]'
                     : entry.entity.faction === 'player'
@@ -276,7 +291,13 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                       : 'text-rose-300 border-b-2 border-rose-500/40'
                 }`}
               >
-                {entry.entity.name.slice(0, 3)}
+                <WesnothIcon
+                  assetKey={getJobWesnothIcon(entry.entity.jobId)}
+                  alt={JOBS[entry.entity.jobId].name}
+                  size={15}
+                  className="hidden sm:inline-block"
+                />
+                <span>{entry.entity.name.slice(0, 3)}</span>
               </div>
             ))}
           </div>
@@ -313,13 +334,24 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
         {/* Left: Active Unit Dossier & Contextual Duel Forecast / Terrain */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 pointer-events-auto">
           {activeUnit && (
-            <div className="valen-plaque valen-bevel px-3 py-2 sm:p-3.5 w-full sm:w-64 space-y-1.5 sm:space-y-2">
+            <div className="valen-plaque valen-bevel px-3 py-2 sm:p-3.5 w-full sm:w-68 space-y-1.5 sm:space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <JobCrestGlyph jobId={activeUnit.jobId} className="w-5 h-5 shrink-0" />
-                  <span className="font-display font-bold text-sm sm:text-base text-[#f6eedb] truncate">
-                    {activeUnit.name}
-                  </span>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <WesnothIcon
+                    assetKey={getJobWesnothIcon(activeUnit.jobId)}
+                    alt={JOBS[activeUnit.jobId].name}
+                    size={34}
+                    framed
+                    frameTone={activeUnit.faction === 'player' ? 'gold' : 'crimson'}
+                  />
+                  <div className="min-w-0">
+                    <div className="font-display font-bold text-sm sm:text-base text-[#f6eedb] truncate leading-tight">
+                      {activeUnit.name}
+                    </div>
+                    <div className="text-[10px] sm:text-[11px] text-[#8a99b3] truncate">
+                      {JOBS[activeUnit.jobId].name}
+                    </div>
+                  </div>
                 </div>
                 <span className="font-mono-num text-[11px] text-[#f3cf7a] shrink-0">
                   Lv.{activeUnit.level} · {activeUnit.facing.slice(0, 1).toUpperCase()}
@@ -327,7 +359,23 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
               </div>
 
               <div className="hidden sm:flex items-center justify-between text-[11px] text-[#8a99b3]">
-                <span>{JOBS[activeUnit.jobId].name}</span>
+                <div className="flex items-center gap-1.5">
+                  {(['weapon', 'armor', 'accessory'] as const).map(slot => {
+                    const itemId = activeUnit.equipment[slot];
+                    if (!itemId || !ITEMS[itemId]) return null;
+                    return (
+                      <span key={slot} title={`${slot}: ${ITEMS[itemId].name}`}>
+                        <WesnothIcon
+                          assetKey={getItemWesnothIcon(itemId)}
+                          alt={ITEMS[itemId].name}
+                          size={22}
+                          framed
+                          frameTone="steel"
+                        />
+                      </span>
+                    );
+                  })}
+                </div>
                 <span className="font-mono-num">
                   MOV {activeUnit.stats.mov} · JMP {activeUnit.stats.jmp}
                 </span>
@@ -558,9 +606,14 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                       game.selectAbility(primaryAttackId);
                       onUpdate();
                     }}
-                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-4 py-2 sm:py-2.5 valen-btn-gold valen-bevel text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-3.5 py-2 valen-btn-gold valen-bevel text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                   >
-                    <ActionGlyph kind="attack" className="w-3.5 h-3.5 hidden sm:block" />
+                    <WesnothIcon
+                      assetKey={getAbilityWesnothIcon(primaryAttackId)}
+                      alt="Attack"
+                      size={18}
+                      className="hidden sm:block"
+                    />
                     <span>Attack</span>
                     <span className="hidden sm:inline font-mono-num text-[10px] opacity-75">[2]</span>
                   </button>
@@ -572,9 +625,14 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                       game.enterActionSelect();
                       onUpdate();
                     }}
-                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-3.5 py-2 sm:py-2.5 valen-btn-steel valen-bevel text-[#f6eedb] text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-3.5 py-2 valen-btn-steel valen-bevel text-[#f6eedb] text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                   >
-                    <ActionGlyph kind="abilities" className="w-3.5 h-3.5 text-[#f3cf7a] hidden sm:block" />
+                    <WesnothIcon
+                      assetKey={UI_WESNOTH_ICONS.abilities}
+                      alt="Abilities"
+                      size={18}
+                      className="hidden sm:block"
+                    />
                     <span className="sm:hidden">Skills</span>
                     <span className="hidden sm:inline">Abilities</span>
                     <span className="hidden sm:inline font-mono-num text-[10px] opacity-70">[3]</span>
@@ -588,9 +646,14 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                       game.enterBagSelect();
                       onUpdate();
                     }}
-                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-3.5 py-2 sm:py-2.5 valen-btn-steel valen-bevel disabled:opacity-40 text-emerald-300 text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                    className="flex-1 sm:flex-initial min-h-[44px] sm:min-h-0 px-2 sm:px-3.5 py-2 valen-btn-steel valen-bevel disabled:opacity-40 text-emerald-300 text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                   >
-                    <ActionGlyph kind="bag" className="w-3.5 h-3.5 hidden sm:block" />
+                    <WesnothIcon
+                      assetKey={UI_WESNOTH_ICONS.bag}
+                      alt="Bag"
+                      size={18}
+                      className="hidden sm:block"
+                    />
                     <span>Bag</span>
                     <span className="hidden sm:inline font-mono-num text-[10px] opacity-70">[4]</span>
                   </button>
@@ -634,9 +697,12 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
           )}
 
           {isPlayerTurn && game.phase === 'action_select' && activeUnit && (
-            <div className="valen-plaque valen-bevel p-3.5 space-y-2.5 max-w-md">
+            <div className="valen-plaque valen-bevel p-3.5 space-y-2.5 w-full sm:w-[33rem]">
               <div className="flex justify-between items-center text-xs">
-                <span className="font-display font-bold text-[#f3cf7a] tracking-wide">Select Ability</span>
+                <span className="font-display font-bold text-[#f3cf7a] tracking-wide flex items-center gap-2">
+                  <WesnothIcon assetKey={UI_WESNOTH_ICONS.abilities} alt="Skills" size={18} />
+                  <span>Select Ability</span>
+                </span>
                 <button
                   type="button"
                   onClick={e => {
@@ -650,7 +716,7 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                   Cancel [Esc]
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {activeUnit.equippedAbilities.map(abId => {
                   const ab = ABILITIES[abId];
                   if (!ab) return null;
@@ -688,20 +754,32 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                         game.selectAbility(abId);
                         onUpdate();
                       }}
-                      className="p-2.5 valen-btn-steel valen-bevel disabled:opacity-45 text-left cursor-pointer"
+                      className="p-2.5 valen-btn-steel valen-bevel disabled:opacity-45 text-left flex items-center gap-2.5 cursor-pointer"
                     >
-                      <div className="flex justify-between items-center gap-2">
-                        <span className="flex items-center gap-1.5 text-xs font-bold text-[#f6eedb] truncate">
-                          <ElementGlyph element={elem} className="w-3.5 h-3.5 shrink-0" />
-                          <span className="truncate">{ab.name}</span>
-                        </span>
-                        <span className="font-mono-num text-[11px] text-sky-400 shrink-0">{ab.mpCost} MP</span>
-                      </div>
-                      <div className="text-[10px] text-[#8a99b3] mt-1 font-mono-num">
-                        Rng {ab.range} · AoE {ab.aoeRadius} · CT {ab.ctCost}
-                      </div>
-                      <div className={`text-[10px] mt-0.5 truncate ${elemMeta.colorClass}`}>
-                        {elemMeta.label} · {synHint}
+                      <WesnothIcon
+                        assetKey={getAbilityWesnothIcon(abId)}
+                        alt={ab.name}
+                        size={42}
+                        framed
+                        frameTone={getElementFrameTone(elem)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex justify-between items-baseline gap-2">
+                          <span className="text-xs font-bold text-[#f6eedb] truncate">{ab.name}</span>
+                          <span
+                            className={`font-mono-num text-[11px] shrink-0 ${
+                              ab.mpCost === 0 ? 'text-emerald-300' : 'text-sky-400'
+                            }`}
+                          >
+                            {ab.mpCost} MP
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#8a99b3] mt-0.5 font-mono-num">
+                          Rng {ab.range} · AoE {ab.aoeRadius} · CT {ab.ctCost}
+                        </div>
+                        <div className={`text-[10px] mt-0.5 truncate ${elemMeta.colorClass}`}>
+                          {elemMeta.label} · {synHint}
+                        </div>
                       </div>
                     </button>
                   );
@@ -711,9 +789,12 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
           )}
 
           {isPlayerTurn && game.phase === 'bag_select' && activeUnit && (
-            <div className="valen-plaque valen-bevel p-3.5 space-y-2.5 max-w-md">
+            <div className="valen-plaque valen-bevel p-3.5 space-y-2.5 w-full sm:w-[29rem]">
               <div className="flex justify-between items-center text-xs">
-                <span className="font-display font-bold text-emerald-300 tracking-wide">Battle Bag</span>
+                <span className="font-display font-bold text-emerald-300 tracking-wide flex items-center gap-2">
+                  <WesnothIcon assetKey={UI_WESNOTH_ICONS.bag} alt="Battle Bag" size={18} />
+                  <span>Battle Bag</span>
+                </span>
                 <button
                   type="button"
                   onClick={e => {
@@ -732,6 +813,7 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                   const item = ITEMS[entry.itemId];
                   const eff = item?.consumableEffect;
                   if (!item || !eff) return null;
+                  const tone = eff.damage ? 'crimson' : eff.healMp ? 'steel' : 'emerald';
                   return (
                     <button
                       key={entry.itemId}
@@ -742,15 +824,24 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
                         game.selectConsumable(entry.itemId);
                         onUpdate();
                       }}
-                      className="p-2.5 valen-btn-steel valen-bevel text-left cursor-pointer"
+                      className="p-2.5 valen-btn-steel valen-bevel text-left flex items-center gap-2.5 cursor-pointer"
                     >
-                      <div className="flex justify-between items-baseline gap-2">
-                        <span className="text-xs font-bold text-[#f6eedb] truncate">{item.name}</span>
-                        <span className="font-mono-num text-[11px] text-emerald-300 shrink-0">×{entry.count}</span>
-                      </div>
-                      <div className="text-[10px] text-[#8a99b3] mt-0.5 font-mono-num">
-                        Rng {eff.range} ·{' '}
-                        {eff.damage ? `${eff.damage} DMG AoE` : eff.healHp ? `+${eff.healHp} HP` : `+${eff.healMp} MP`}
+                      <WesnothIcon
+                        assetKey={getItemWesnothIcon(entry.itemId)}
+                        alt={item.name}
+                        size={40}
+                        framed
+                        frameTone={tone}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex justify-between items-baseline gap-2">
+                          <span className="text-xs font-bold text-[#f6eedb] truncate">{item.name}</span>
+                          <span className="font-mono-num text-[11px] text-emerald-300 shrink-0">×{entry.count}</span>
+                        </div>
+                        <div className="text-[10px] text-[#8a99b3] mt-0.5 font-mono-num">
+                          Rng {eff.range} ·{' '}
+                          {eff.damage ? `${eff.damage} DMG AoE` : eff.healHp ? `+${eff.healHp} HP` : `+${eff.healMp} MP`}
+                        </div>
                       </div>
                     </button>
                   );
@@ -760,7 +851,18 @@ export const BattleHUD: React.FC<Props> = ({ onUpdate }) => {
           )}
 
           {isPlayerTurn && game.phase === 'target_select' && (
-            <div className="valen-plaque valen-bevel px-3.5 py-2.5 flex items-center gap-3">
+            <div className="valen-plaque valen-bevel px-3.5 py-2 flex items-center gap-3">
+              <WesnothIcon
+                assetKey={
+                  game.selectedItemId
+                    ? getItemWesnothIcon(game.selectedItemId)
+                    : getAbilityWesnothIcon(game.selectedAbilityId || 'slash')
+                }
+                alt="Selected Action"
+                size={28}
+                framed
+                frameTone="gold"
+              />
               <span className="text-xs text-[#f3cf7a] font-medium">
                 {(game.selectedItemId
                   ? ITEMS[game.selectedItemId]?.name

@@ -1,4 +1,4 @@
-import { HexCoord, WesnothHexTile, WesnothMapData, getAdjacentHexes, getHexTile } from './WesnothMapSystem';
+import { HexCoord, WesnothHexTile, WesnothMapData, getAdjacentHexes, getHexTile, hexDistance, offsetToCube } from './WesnothMapSystem';
 
 export type HexDirection = 'n' | 'ne' | 'se' | 's' | 'sw' | 'nw';
 
@@ -15,7 +15,11 @@ export type TransitionFamily =
   | 'grass_green_medium'
   | 'grass_semi_dry_medium'
   | 'hills_regular'
-  | 'hills_water';
+  | 'hills_water'
+  | 'dun_floor'
+  | 'dun_flagstones'
+  | 'shroud_void'
+  | 'fog';
 
 export interface TileTransitionLayer {
   family: TransitionFamily;
@@ -26,7 +30,7 @@ export interface TileTransitionLayer {
 export interface HexAutoTilePlan {
   baseAsset: string;
   transitions: TileTransitionLayer[];
-  /** Outer perimeter edges for connected Ch/Kh castle walls, ordered by HexDirection */
+  /** Outer perimeter edges for connected Ch/Kh/Cud/Kud castle walls, ordered by HexDirection */
   castleOuterDirs: HexDirection[];
 }
 
@@ -43,6 +47,12 @@ const GRASS_SEMI_VARIANTS = ['grass_semi_dry', 'grass_semi_dry2', 'grass_semi_dr
 const ROAD_VARIANTS = ['flat_road', 'flat_road2', 'flat_road3'] as const;
 const SAND_VARIANTS = ['sand_beach', 'sand_beach2'] as const;
 const HILLS_VARIANTS = ['hills_regular', 'hills_regular2', 'hills_regular3'] as const;
+const DUN_STONE_VARIANTS = ['dun_stone_floor', 'dun_stone_floor2', 'dun_stone_floor3'] as const;
+const DUN_ANCIENT_VARIANTS = ['dun_stone_ancient', 'dun_stone_ancient2'] as const;
+const DUN_FLAGSTONE_VARIANTS = ['dun_flagstones', 'dun_flagstones2'] as const;
+const DUN_CAVE_VARIANTS = ['dun_cave_floor', 'dun_cave_floor2', 'dun_cave_floor3'] as const;
+const DUN_EARTHY_VARIANTS = ['dun_cave_earthy', 'dun_cave_earthy2'] as const;
+const DUN_PATH_VARIANTS = ['dun_cave_path', 'dun_cave_path2'] as const;
 
 function deterministicHash(x: number, y: number): number {
   let n = (x * 73856093) ^ (y * 19349663);
@@ -54,6 +64,7 @@ export function pickWesnothBaseVariant(tile: WesnothHexTile): string {
   const h = deterministicHash(tile.x, tile.y);
   const code = tile.terrain.baseCode;
 
+  if (tile.terrain.overlayCategory === 'mushrooms') return 'dun_mushroom_base';
   if (code === 'Gg') return GRASS_GREEN_VARIANTS[h % GRASS_GREEN_VARIANTS.length];
   if (code === 'Gs' || code === 'Aa') return GRASS_SEMI_VARIANTS[h % GRASS_SEMI_VARIANTS.length];
   if (code === 'Rr') return ROAD_VARIANTS[h % ROAD_VARIANTS.length];
@@ -62,6 +73,12 @@ export function pickWesnothBaseVariant(tile: WesnothHexTile): string {
     return HILLS_VARIANTS[h % HILLS_VARIANTS.length];
   }
   if (code === 'Ch') return 'castle_cobbles';
+  if (code === 'Iyd') return DUN_STONE_VARIANTS[h % DUN_STONE_VARIANTS.length];
+  if (code === 'Iya') return DUN_ANCIENT_VARIANTS[h % DUN_ANCIENT_VARIANTS.length];
+  if (code === 'Urb') return DUN_FLAGSTONE_VARIANTS[h % DUN_FLAGSTONE_VARIANTS.length];
+  if (code === 'Uu') return DUN_CAVE_VARIANTS[h % DUN_CAVE_VARIANTS.length];
+  if (code === 'Uue') return DUN_EARTHY_VARIANTS[h % DUN_EARTHY_VARIANTS.length];
+  if (code === 'Ur') return DUN_PATH_VARIANTS[h % DUN_PATH_VARIANTS.length];
   return tile.terrain.baseAsset;
 }
 
@@ -108,6 +125,14 @@ function isWaterBase(code: string): boolean {
   return code === 'Ww' || code === 'Wo' || code === 'Wwf' || code === 'Qlf';
 }
 
+function isCastleBase(code: string): boolean {
+  return code === 'Ch' || code === 'Kh' || code === 'Cud' || code === 'Kud';
+}
+
+function isDungeonCaveBase(code: string): boolean {
+  return code === 'Uu' || code === 'Uue' || code === 'Ur' || code === 'Urb' || code === 'Iyd' || code === 'Iya';
+}
+
 /**
  * Computes authentic Battle for Wesnoth multi-layer directional transitions
  * (ordered bottom-to-top per Wesnoth `terrain-graphics.cfg` layer priority).
@@ -132,13 +157,13 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
 
   for (const { dir, tile: nb } of neighbors) {
     if (!nb) {
-      if (selfCode === 'Ch' || selfCode === 'Kh') castleOuterDirs.push(dir);
+      if (isCastleBase(selfCode)) castleOuterDirs.push(dir);
       continue;
     }
 
     const nbCode = nb.terrain.baseCode;
 
-    if ((selfCode === 'Ch' || selfCode === 'Kh') && nbCode !== 'Ch' && nbCode !== 'Kh') {
+    if (isCastleBase(selfCode) && !isCastleBase(nbCode)) {
       castleOuterDirs.push(dir);
     }
 
@@ -162,6 +187,11 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
       push(30, 'flat_bank', dir);
     }
 
+    // 3b. Dungeon riverbank drawn onto subterranean water bordering cavern/dungeon floors
+    if (selfCode === 'Ww' && isDungeonCaveBase(nbCode) && !selfIsBridge) {
+      push(30, 'flat_bank', dir);
+    }
+
     // 4. Swamp mire transitions onto adjacent flat/water (-230)
     if (
       nbCode === 'Ss' &&
@@ -178,6 +208,17 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
     // 6. Cobble road & castle cobbles blend onto dirt/sand/grass/water-edge (-300)
     if ((nbCode === 'Rr' || nbCode === 'Ch' || nbCode === 'Kh') && (selfCode === 'Re' || selfCode === 'Ds' || selfCode === 'Dd' || selfCode === 'Rd')) {
       push(60, 'flat_road', dir);
+    }
+
+    // 6b. Dungeon catacomb stone & dark flagstone blending across subterranean floors
+    if ((nbCode === 'Iyd' || nbCode === 'Iya') && (selfCode === 'Uu' || selfCode === 'Uue' || selfCode === 'Ur')) {
+      push(62, 'dun_floor', dir);
+    }
+    if (nbCode === 'Urb' && (selfCode === 'Uu' || selfCode === 'Uue' || selfCode === 'Ur' || selfCode === 'Iyd' || selfCode === 'Iya')) {
+      push(64, 'dun_flagstones', dir);
+    }
+    if ((nbCode === 'Uu' || nbCode === 'Uue' || nbCode === 'Ur') && (selfCode === 'Qxu' || selfCode === 'Qlf') && !selfIsBridge) {
+      push(66, 'flat_dirt', dir);
     }
 
     // 7. Green grass transitions softly into semi-dry grass (-256)
@@ -211,6 +252,117 @@ export function computeHexAutoTilePlan(map: WesnothMapData, x: number, y: number
     transitions: layerBuckets.map(b => b.item),
     castleOuterDirs
   };
+}
+
+function cubeRound(qf: number, rf: number, sf: number): { q: number; r: number; s: number } {
+  let q = Math.round(qf);
+  let r = Math.round(rf);
+  let s = Math.round(sf);
+  const qDiff = Math.abs(q - qf);
+  const rDiff = Math.abs(r - rf);
+  const sDiff = Math.abs(s - sf);
+
+  if (qDiff > rDiff && qDiff > sDiff) {
+    q = -r - s;
+  } else if (rDiff > sDiff) {
+    r = -q - s;
+  } else {
+    s = -q - r;
+  }
+  return { q, r, s };
+}
+
+function cubeToOddQ(q: number, r: number): HexCoord {
+  const x = q;
+  const y = r + ((q - (q & 1)) >> 1);
+  return { x, y };
+}
+
+/**
+ * Checks hex Line-of-Sight between (ax, ay) and (bx, by) on a Wesnoth map.
+ * Intermediate wall hexes (`blocksLos`) block sight past them, while the wall hex
+ * directly hit is itself visible so dungeon corridor boundaries render cleanly.
+ */
+export function hasDungeonHexLineOfSight(
+  map: WesnothMapData,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): boolean {
+  const dist = hexDistance(ax, ay, bx, by);
+  if (dist <= 1) return true;
+
+  const ac = offsetToCube(ax, ay);
+  const bc = offsetToCube(bx, by);
+  // Tiny asymmetric offset prevents exact boundary ties along hex edges
+  const aq = ac.q + 1e-6;
+  const ar = ac.r + 2e-6;
+  const as = ac.s - 3e-6;
+  const bq = bc.q + 1e-6;
+  const br = bc.r + 2e-6;
+  const bs = bc.s - 3e-6;
+
+  for (let i = 1; i < dist; i++) {
+    const t = i / dist;
+    const rounded = cubeRound(aq + (bq - aq) * t, ar + (br - ar) * t, as + (bs - as) * t);
+    const step = cubeToOddQ(rounded.q, rounded.r);
+    const tile = getHexTile(map, step.x, step.y);
+    if (!tile || tile.terrain.blocksLos) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Computes currently visible dungeon hex keys around the hero's torchlight radius,
+ * respecting dungeon walls (`blocksLos`) plus faint beacon glow from discovered lit sconces.
+ */
+export function computeDungeonVisibility(
+  map: WesnothMapData,
+  heroX: number,
+  heroY: number,
+  visionRadius: number,
+  previouslyExplored?: Set<string>
+): Set<string> {
+  const visible = new Set<string>();
+  const minX = Math.max(0, heroX - visionRadius);
+  const maxX = Math.min(map.width - 1, heroX + visionRadius);
+  const minY = Math.max(0, heroY - visionRadius);
+  const maxY = Math.min(map.height - 1, heroY + visionRadius);
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const dist = hexDistance(heroX, heroY, x, y);
+      if (dist > visionRadius) continue;
+      if (hasDungeonHexLineOfSight(map, heroX, heroY, x, y)) {
+        visible.add(`${x},${y}`);
+      }
+    }
+  }
+
+  // Discovered wall sconces (`Xol` / `emitsLight`) cast a gentle 1-hex torch pool around themselves
+  if (previouslyExplored) {
+    for (const key of previouslyExplored) {
+      const [xs, ys] = key.split(',');
+      const lx = parseInt(xs, 10);
+      const ly = parseInt(ys, 10);
+      const tile = getHexTile(map, lx, ly);
+      if (!tile?.terrain.emitsLight) continue;
+      if (hexDistance(heroX, heroY, lx, ly) <= visionRadius + 3) {
+        visible.add(key);
+        for (const nb of getAdjacentHexes(lx, ly, map.width, map.height)) {
+          const nbTile = getHexTile(map, nb.x, nb.y);
+          if (nbTile && !nbTile.terrain.blocksLos) {
+            visible.add(`${nb.x},${nb.y}`);
+          }
+        }
+      }
+    }
+  }
+
+  return visible;
 }
 
 /**

@@ -327,10 +327,12 @@ export class BattleVfxSystem {
     const motePalette =
       biome === 'caldera'
         ? [0xf97316, 0xfbbf24, 0xfb7185]
-        : biome === 'ruins'
-          ? [0xfde047, 0x38bdf8, 0xfef3c7]
-          : [0xd9f99d, 0xfef08a, 0xbae6fd];
-    this.ambientRiseSpeed = biome === 'caldera' ? 0.34 : 0.14;
+        : biome === 'dungeon'
+          ? [0xf59e0b, 0xfdba74, 0x94a3b8]
+          : biome === 'ruins'
+            ? [0xfde047, 0x38bdf8, 0xfef3c7]
+            : [0xd9f99d, 0xfef08a, 0xbae6fd];
+    this.ambientRiseSpeed = biome === 'caldera' ? 0.34 : biome === 'dungeon' ? 0.22 : 0.14;
 
     for (let i = 0; i < this.MAX_AMBIENT; i++) {
       const x = -1.2 + ((i * 37) % 100) / 100 * (gridWidth + 2.4);

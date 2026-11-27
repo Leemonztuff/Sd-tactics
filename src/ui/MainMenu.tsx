@@ -4,6 +4,8 @@ import { soundManager } from '../utils/SoundManager';
 import { Volume2, VolumeX } from 'lucide-react';
 import { VALEN_BRAND } from './brand/BrandKit';
 import { ValenCrestSvg } from './brand/ValenIcons';
+import { WesnothIcon } from './brand/WesnothIcon';
+import { UI_WESNOTH_ICONS } from '../overworld/WesnothIconRegistry';
 import { ModelViewerModal } from './ModelViewerModal';
 
 interface Props {
@@ -92,8 +94,15 @@ export const MainMenu: React.FC<Props> = ({ onUpdate }) => {
 
         <div className="valen-divider w-48 my-5" />
 
-        <p className="font-mono-num text-xs text-[#8a99b3] tracking-wide mb-6">
-          Active Squad {squadCount}/4 · Treasury {game.saveData.gold} G · Chapters {clearedCount}/4
+        <p className="font-mono-num text-xs text-[#8a99b3] tracking-wide mb-6 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>Active Squad {squadCount}/4</span>
+          <span>·</span>
+          <span className="inline-flex items-center gap-1 text-[#f3cf7a]">
+            <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={13} />
+            <span>Treasury {game.saveData.gold} G</span>
+          </span>
+          <span>·</span>
+          <span>Chapters {clearedCount}/4</span>
         </p>
 
         <div className="flex flex-col sm:flex-row sm:flex-nowrap items-stretch sm:items-center gap-3 max-w-2xl">

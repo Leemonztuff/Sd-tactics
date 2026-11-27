@@ -3,6 +3,8 @@ import { game } from '../game/Game';
 import { QUALITY_PRESETS, QualityTier } from '../rendering/BrawlStyleSystem';
 import { soundManager } from '../utils/SoundManager';
 import { Trophy, ShieldAlert, Pause, Star, CheckCircle2, Circle } from 'lucide-react';
+import { WesnothIcon } from './brand/WesnothIcon';
+import { UI_WESNOTH_ICONS } from '../overworld/WesnothIconRegistry';
 
 interface Props {
   onUpdate: () => void;
@@ -164,15 +166,21 @@ export const VictoryModal: React.FC<Props> = ({ onUpdate }) => {
         <div className="grid grid-cols-3 divide-x divide-white/10 font-mono-num text-center">
           <div className="px-2">
             <div className="text-[10px] uppercase tracking-wider text-[#8a99b3]">Gold</div>
-            <div className="text-base font-bold text-[#f3cf7a] mt-0.5">+{summary?.rewardGold ?? 0}</div>
+            <div className="text-base font-bold text-[#f3cf7a] mt-0.5 flex items-center justify-center gap-1.5">
+              <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={16} />
+              <span>+{summary?.rewardGold ?? 0}</span>
+            </div>
             {summary && summary.bonusGold > 0 && (
               <div className="text-[10px] text-emerald-400">+{summary.bonusGold} Mastery</div>
             )}
           </div>
           <div className="px-2">
             <div className="text-[10px] uppercase tracking-wider text-[#8a99b3]">EXP / JP</div>
-            <div className="text-base font-bold text-emerald-400 mt-0.5">
-              +{summary?.rewardExp ?? 0} / +{summary?.rewardJp ?? 0}
+            <div className="text-base font-bold text-emerald-400 mt-0.5 flex items-center justify-center gap-1.5">
+              <WesnothIcon assetKey={UI_WESNOTH_ICONS.jp} alt="JP" size={16} />
+              <span>
+                +{summary?.rewardExp ?? 0} / +{summary?.rewardJp ?? 0}
+              </span>
             </div>
           </div>
           <div className="px-2">

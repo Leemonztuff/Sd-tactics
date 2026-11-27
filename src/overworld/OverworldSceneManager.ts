@@ -18,8 +18,20 @@ import { ActivePatrolState } from './OverworldManager';
 import { ActiveWorldEventNode } from './OverworldEvents';
 import { OverworldWeatherSystem } from './OverworldWeatherSystem';
 import { OVERWORLD_VILLAGES, OverworldPoiSpec } from './WesnothOverworldMap';
+import {
+  OVERWORLD_LANDMARKS,
+  getPoiWesnothAsset,
+  getWorldEventWesnothAsset
+} from './WesnothIconRegistry';
+import {
+  DungeonAllySpec,
+  DungeonFloorSpec,
+  DungeonTrapSpec,
+  DungeonTreasureSpec,
+  OverworldRuinSpec
+} from './WesnothDungeonMaps';
 import { WesnothTextureCache } from './WesnothAssetLoader';
-import { WesnothTileAtlas, TILE_PX } from './WesnothTileAtlas';
+import { ShroudVisibilityState, WesnothTileAtlas, TILE_PX } from './WesnothTileAtlas';
 import { WesnothMovetypeId } from './WesnothTerrain';
 import {
   BRAWL_PALETTE,
@@ -36,6 +48,16 @@ const _scale = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _color = new THREE.Color();
 
+export interface OverworldSceneBuildOptions {
+  isDungeon: boolean;
+  floorSpec?: DungeonFloorSpec;
+  ruins?: OverworldRuinSpec[];
+  visibility?: ShroudVisibilityState;
+  detectedTraps?: DungeonTrapSpec[];
+  treasures?: DungeonTreasureSpec[];
+  allies?: DungeonAllySpec[];
+}
+
 interface BillboardSpriteEntry {
   mesh: THREE.Mesh;
   baseX: number;
@@ -50,6 +72,8 @@ interface PatrolVisualEntry {
   ring: THREE.Mesh;
   targetPos: THREE.Vector3;
   phase: number;
+  hexX: number;
+  hexY: number;
 }
 
 interface PoiVisualEntry {
@@ -66,6 +90,29 @@ interface WorldEventVisualEntry {
   ring: THREE.Mesh;
   baseY: number;
   phase: number;
+}
+
+interface RuinVisualEntry {
+  group: THREE.Group;
+  sprite: THREE.Mesh;
+  ring: THREE.Mesh;
+  baseY: number;
+  phase: number;
+}
+
+interface DungeonMarkerEntry {
+  group: THREE.Group;
+  hexKey: string;
+  sprite?: THREE.Mesh;
+  ring: THREE.Mesh;
+  baseY: number;
+  phase: number;
+}
+
+interface DungeonWallEntry {
+  hexKey: string;
+  group: THREE.Group;
+  sideMesh: THREE.Mesh;
 }
 
 const HEX_CORNERS: Array<{ x: number; z: number }> = Array.from({ length: 6 }, (_, i) => {
@@ -103,7 +150,8 @@ function getHexEdgeTransform(dir: HexDirection, radiusScale: number = 1) {
  */
 function buildMergedHexTerrainGeometries(
   map: WesnothMapData,
-  atlas: WesnothTileAtlas
+  atlas: WesnothTileAtlas,
+  isDungeon: boolean = false
 ): { topGeo: THREE.BufferGeometry; sideGeo: THREE.BufferGeometry } {
   const topPos: number[] = [];
   const topNorm: number[] = [];
@@ -119,13 +167,21 @@ function buildMergedHexTerrainGeometries(
   const { atlasW, atlasH } = atlas.layout;
   const tmpColor = new THREE.Color();
 
+  const effectiveElev = (t: WesnothHexTile | null | undefined) => {
+    if (!t) return 0;
+    // In dungeon mode, wall hexes stay flat in the base terrain mesh and use toggleable 3D wall blocks
+    // so unexplored walls never jut out above the pitch-black Shroud.
+    if (isDungeon && t.terrain.isWall) return 0.26;
+    return t.terrain.elevation;
+  };
+
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
       const tile: WesnothHexTile | undefined = map.tiles[y]?.[x];
       if (!tile) continue;
 
       const { wx, wz } = hexToWorld(x, y);
-      const h = tile.terrain.elevation;
+      const h = effectiveElev(tile);
       const { ox, oy } = atlas.layout.cellOrigin(x, y);
 
       const toAtlasUv = (cx: number, cz: number) => {
@@ -161,7 +217,7 @@ function buildMergedHexTerrainGeometries(
       tmpColor.setHex(tile.terrain.sideColor);
 
       for (const { dir, tile: nb } of neighbors) {
-        const nbH = nb ? nb.terrain.elevation : 0;
+        const nbH = effectiveElev(nb);
         if (h <= nbH + 0.004) continue;
 
         const [iA, iB] = DIR_EDGE_CORNERS[dir];
@@ -183,7 +239,6 @@ function buildMergedHexTerrainGeometries(
         );
         for (let k = 0; k < 4; k++) {
           sideNorm.push(nx, 0, nz);
-          // Slight vertical shading darker at cliff bottom for crisp 3D depth
           const shade = k >= 2 ? 0.72 : 1.0;
           sideCol.push(tmpColor.r * shade, tmpColor.g * shade, tmpColor.b * shade);
         }
@@ -207,6 +262,97 @@ function buildMergedHexTerrainGeometries(
   return { topGeo, sideGeo };
 }
 
+function buildDungeonWallBlockMesh(
+  tile: WesnothHexTile,
+  atlas: WesnothTileAtlas,
+  topMat: THREE.Material,
+  sideMat: THREE.Material
+): { group: THREE.Group; sideMesh: THREE.Mesh } {
+  const grp = new THREE.Group();
+  const { wx, wz } = hexToWorld(tile.x, tile.y);
+  const baseH = 0.255;
+  const topH = tile.terrain.elevation;
+  const halfHexH = (HEX_SQRT3 / 2) * (HEX_RADIUS * 1.004);
+  const { atlasW, atlasH } = atlas.layout;
+  const { ox, oy } = atlas.layout.cellOrigin(tile.x, tile.y);
+
+  const toAtlasUv = (cx: number, cz: number) => {
+    const localU = 0.5 + 0.5 * (cx / (HEX_RADIUS * 1.004));
+    const localVTopDown = 0.5 + 0.5 * (cz / halfHexH);
+    const u = (ox + localU * TILE_PX) / atlasW;
+    const v = 1 - (oy + localVTopDown * TILE_PX) / atlasH;
+    return [u, v];
+  };
+
+  // Top cap mapped cleanly to Wesnoth wall sprite inside atlas
+  const topPos: number[] = [];
+  const topNorm: number[] = [];
+  const topUv: number[] = [];
+  const topIdx: number[] = [];
+  const [cu, cv] = toAtlasUv(0, 0);
+  topPos.push(0, topH, 0);
+  topNorm.push(0, 1, 0);
+  topUv.push(cu, cv);
+  for (let i = 0; i < 6; i++) {
+    const c = HEX_CORNERS[i];
+    const [u, v] = toAtlasUv(c.x, c.z);
+    topPos.push(c.x, topH, c.z);
+    topNorm.push(0, 1, 0);
+    topUv.push(u, v);
+  }
+  for (let i = 0; i < 6; i++) {
+    topIdx.push(0, 1 + ((i + 1) % 6), 1 + i);
+  }
+  const topGeo = new THREE.BufferGeometry();
+  topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
+  topGeo.setAttribute('normal', new THREE.Float32BufferAttribute(topNorm, 3));
+  topGeo.setAttribute('uv', new THREE.Float32BufferAttribute(topUv, 2));
+  topGeo.setIndex(topIdx);
+  const topMesh = new THREE.Mesh(topGeo, topMat);
+  topMesh.receiveShadow = true;
+
+  // Side masonry faces
+  const sPos: number[] = [];
+  const sNorm: number[] = [];
+  const sCol: number[] = [];
+  const sIdx: number[] = [];
+  const tmpCol = new THREE.Color(tile.terrain.sideColor);
+  for (let i = 0; i < 6; i++) {
+    const next = (i + 1) % 6;
+    const cA = HEX_CORNERS[i];
+    const cB = HEX_CORNERS[next];
+    const mx = (cA.x + cB.x) * 0.5;
+    const mz = (cA.z + cB.z) * 0.5;
+    const len = Math.hypot(mx, mz) || 1;
+    const nx = mx / len;
+    const nz = mz / len;
+    const bv = sPos.length / 3;
+    sPos.push(
+      cB.x, topH, cB.z,
+      cA.x, topH, cA.z,
+      cA.x, baseH, cA.z,
+      cB.x, baseH, cB.z
+    );
+    for (let k = 0; k < 4; k++) {
+      sNorm.push(nx, 0, nz);
+      const shade = k >= 2 ? 0.65 : 1.0;
+      sCol.push(tmpCol.r * shade, tmpCol.g * shade, tmpCol.b * shade);
+    }
+    sIdx.push(bv, bv + 1, bv + 2, bv, bv + 2, bv + 3);
+  }
+  const sideGeo = new THREE.BufferGeometry();
+  sideGeo.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
+  sideGeo.setAttribute('normal', new THREE.Float32BufferAttribute(sNorm, 3));
+  sideGeo.setAttribute('color', new THREE.Float32BufferAttribute(sCol, 3));
+  sideGeo.setIndex(sIdx);
+  const sideMesh = new THREE.Mesh(sideGeo, sideMat);
+  sideMesh.receiveShadow = true;
+
+  grp.position.set(wx, 0, wz);
+  grp.add(topMesh, sideMesh);
+  return { group: grp, sideMesh };
+}
+
 export class OverworldSceneManager {
   public container: HTMLElement;
   public scene: THREE.Scene;
@@ -222,10 +368,22 @@ export class OverworldSceneManager {
   private patrolVisuals = new Map<string, PatrolVisualEntry>();
   private poiVisuals = new Map<string, PoiVisualEntry>();
   private worldEventVisuals = new Map<string, WorldEventVisualEntry>();
+  private ruinVisuals = new Map<string, RuinVisualEntry>();
+  private dungeonTreasureVisuals = new Map<string, DungeonMarkerEntry>();
+  private dungeonAllyVisuals = new Map<string, DungeonMarkerEntry>();
+  private dungeonTrapVisuals = new Map<string, DungeonMarkerEntry>();
+  private dungeonWallEntries: DungeonWallEntry[] = [];
+  private dungeonRevealableObjects: Array<{ hexKey: string; obj: THREE.Object3D }> = [];
+  private wallSideLitMat: THREE.MeshLambertMaterial | null = null;
+  private wallSideFogMat: THREE.MeshLambertMaterial | null = null;
+
+  private isDungeonMode = false;
+  private latestVisibility?: ShroudVisibilityState;
 
   private heroGroup: THREE.Group;
   private heroSprite: THREE.Mesh;
   private heroRing: THREE.Mesh;
+  private heroTorchLight: THREE.PointLight;
   private heroTargetPos = new THREE.Vector3();
   private heroFacingEast = true;
   private heroWalkPhase = 0;
@@ -260,7 +418,9 @@ export class OverworldSceneManager {
   private lastFrameMs = performance.now();
   private boundListeners: Array<{ target: EventTarget; type: string; fn: EventListenerOrEventListenerObject }> = [];
   private mapBounds = { maxX: 30, maxZ: 25 };
+  private hemiLight: THREE.HemisphereLight | null = null;
   private sunLight: THREE.DirectionalLight | null = null;
+  private rimLight: THREE.DirectionalLight | null = null;
   private qualityPreset: QualityPreset;
   private detachContextGuards: (() => void) | null = null;
 
@@ -359,7 +519,11 @@ export class OverworldSceneManager {
     this.heroSprite = new THREE.Mesh(heroPlaneGeo, heroMat);
     this.heroSprite.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
 
-    this.heroGroup.add(heroShadow, this.heroRing, this.heroSprite);
+    // Warm hero torchlight active inside Dungeons
+    this.heroTorchLight = new THREE.PointLight(0xffb45c, 0, 14.5, 1.35);
+    this.heroTorchLight.position.set(0, 1.55, 0);
+
+    this.heroGroup.add(heroShadow, this.heroRing, this.heroSprite, this.heroTorchLight);
     this.scene.add(this.heroGroup);
 
     this.initListeners();
@@ -384,6 +548,7 @@ export class OverworldSceneManager {
   private setupLighting() {
     const pal = BRAWL_PALETTE.overworld;
     const hemi = new THREE.HemisphereLight(pal.hemiSky, pal.hemiGround, pal.hemiIntensity);
+    this.hemiLight = hemi;
     this.scene.add(hemi);
 
     const sun = new THREE.DirectionalLight(pal.sunColor, pal.sunIntensity);
@@ -403,6 +568,7 @@ export class OverworldSceneManager {
 
     const rim = new THREE.DirectionalLight(pal.rimColor, pal.rimIntensity);
     rim.position.set(-14, 10, -16);
+    this.rimLight = rim;
     this.scene.add(rim);
   }
 
@@ -425,7 +591,7 @@ export class OverworldSceneManager {
     this.weatherSystem?.setQualityScale(preset.particleScale);
   }
 
-  public buildOverworldScene(map: WesnothMapData) {
+  public buildOverworldScene(map: WesnothMapData, options?: OverworldSceneBuildOptions) {
     while (this.worldGroup.children.length > 0) {
       this.worldGroup.remove(this.worldGroup.children[0]);
     }
@@ -435,11 +601,74 @@ export class OverworldSceneManager {
       this.weatherSystem.dispose();
       this.weatherSystem = null;
     }
+    for (const vis of this.patrolVisuals.values()) this.scene.remove(vis.group);
+    this.patrolVisuals.clear();
+    for (const vis of this.poiVisuals.values()) this.scene.remove(vis.group);
+    this.poiVisuals.clear();
+    for (const vis of this.worldEventVisuals.values()) this.scene.remove(vis.group);
+    this.worldEventVisuals.clear();
+    for (const vis of this.ruinVisuals.values()) this.scene.remove(vis.group);
+    this.ruinVisuals.clear();
+    for (const vis of this.dungeonTreasureVisuals.values()) this.scene.remove(vis.group);
+    this.dungeonTreasureVisuals.clear();
+    for (const vis of this.dungeonAllyVisuals.values()) this.scene.remove(vis.group);
+    this.dungeonAllyVisuals.clear();
+    for (const vis of this.dungeonTrapVisuals.values()) this.scene.remove(vis.group);
+    this.dungeonTrapVisuals.clear();
+
     this.pickMeshes = [];
     this.billboards = [];
+    this.dungeonWallEntries = [];
+    this.dungeonRevealableObjects = [];
+    this.isDungeonMode = Boolean(options?.isDungeon);
+    this.latestVisibility = options?.visibility;
 
+    const pal = BRAWL_PALETTE.overworld;
     const maxWorld = hexToWorld(map.width - 1, map.height - 1);
     this.mapBounds = { maxX: maxWorld.wx, maxZ: maxWorld.wz };
+
+    // Configure lighting & atmosphere for Dungeon (pitch-black shroud + hero torch) vs Overworld
+    const heroMat = this.heroSprite.material as THREE.MeshLambertMaterial;
+    if (this.isDungeonMode) {
+      this.scene.background = new THREE.Color(0x000000);
+      this.scene.fog = new THREE.FogExp2(0x000000, 0.015);
+      this.renderer.toneMappingExposure = 1.12;
+      if (this.hemiLight) {
+        this.hemiLight.color.setHex(0x94a3b8);
+        this.hemiLight.groundColor.setHex(0x0f172a);
+        this.hemiLight.intensity = 0.72;
+      }
+      if (this.sunLight) {
+        this.sunLight.color.setHex(0xe2e8f0);
+        this.sunLight.intensity = 0.68;
+      }
+      if (this.rimLight) {
+        this.rimLight.intensity = 0.42;
+      }
+      heroMat.emissive.setHex(0x3b2f22);
+      heroMat.emissiveIntensity = 0.34;
+      this.heroTorchLight.intensity = 4.2;
+    } else {
+      this.scene.background = new THREE.Color(pal.backgroundHex);
+      this.scene.fog = new THREE.FogExp2(pal.backgroundHex, pal.fogDensity);
+      this.renderer.toneMappingExposure = pal.toneMappingExposure;
+      if (this.hemiLight) {
+        this.hemiLight.color.setHex(pal.hemiSky);
+        this.hemiLight.groundColor.setHex(pal.hemiGround);
+        this.hemiLight.intensity = pal.hemiIntensity;
+      }
+      if (this.sunLight) {
+        this.sunLight.color.setHex(pal.sunColor);
+        this.sunLight.intensity = pal.sunIntensity;
+      }
+      if (this.rimLight) {
+        this.rimLight.intensity = pal.rimIntensity;
+      }
+      heroMat.emissive.setHex(0x1e293b);
+      heroMat.emissiveIntensity = 0.18;
+      this.heroTorchLight.intensity = 0;
+    }
+
     if (this.sunLight) {
       const cx = maxWorld.wx * 0.5;
       const cz = maxWorld.wz * 0.5;
@@ -448,12 +677,16 @@ export class OverworldSceneManager {
       this.sunLight.target.updateMatrixWorld();
     }
 
-    // 1. Auto-tiled Wesnoth Atlas (all transitions composited into 1 crisp pixel-art atlas)
-    this.tileAtlas = new WesnothTileAtlas(map, () => {
-      if (!this.disposed) {
-        this.renderer.render(this.scene, this.camera);
-      }
-    });
+    // 1. Auto-tiled Wesnoth Atlas (all transitions & Shroud/Fog composited into 1 crisp pixel-art atlas)
+    this.tileAtlas = new WesnothTileAtlas(
+      map,
+      () => {
+        if (!this.disposed) {
+          this.renderer.render(this.scene, this.camera);
+        }
+      },
+      options?.visibility
+    );
     if (!this.isSoftwareGl) {
       this.tileAtlas.texture.anisotropy = Math.min(
         this.qualityPreset.anisotropyCap,
@@ -461,13 +694,12 @@ export class OverworldSceneManager {
       );
     }
 
-    const pal = BRAWL_PALETTE.overworld;
-    const { topGeo, sideGeo } = buildMergedHexTerrainGeometries(map, this.tileAtlas);
+    const { topGeo, sideGeo } = buildMergedHexTerrainGeometries(map, this.tileAtlas, this.isDungeonMode);
 
     // Calibrated MeshLambertMaterial keeps hex tiles crisp, richly saturated, and fast on low-end GPUs
     const terrainTopMat = new THREE.MeshLambertMaterial({
       map: this.tileAtlas.texture,
-      color: pal.terrainTintHex
+      color: this.isDungeonMode ? 0xffffff : pal.terrainTintHex
     });
     const terrainTopMesh = new THREE.Mesh(topGeo, terrainTopMat);
     terrainTopMesh.receiveShadow = true;
@@ -482,36 +714,56 @@ export class OverworldSceneManager {
     terrainSideMesh.castShadow = this.qualityPreset.shadowsEnabled && !this.isSoftwareGl;
     this.worldGroup.add(terrainSideMesh);
 
-    // 2. Continuous Deep Ocean base matched to Brawl-Tactics deep sea palette
+    this.wallSideLitMat = new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      flatShading: true
+    });
+    this.wallSideFogMat = new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      flatShading: true,
+      color: 0x4b5563
+    });
+
+    // 2. Continuous Deep Ocean base (Overworld) OR pitch-black abyss backdrop (Dungeon)
     const seaGeo = new THREE.PlaneGeometry(130, 130);
     seaGeo.rotateX(-Math.PI / 2);
-    const seaMat = new THREE.MeshLambertMaterial({
-      color: pal.seaHex
-    });
-    const seaMesh = new THREE.Mesh(seaGeo, seaMat);
-    seaMesh.position.set(maxWorld.wx / 2, 0.01, maxWorld.wz / 2);
-    seaMesh.receiveShadow = true;
-    this.worldGroup.add(seaMesh);
-    this.waterOverlayMesh = seaMesh;
+    if (this.isDungeonMode) {
+      const abyssMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+      const abyssMesh = new THREE.Mesh(seaGeo, abyssMat);
+      abyssMesh.position.set(maxWorld.wx / 2, -0.02, maxWorld.wz / 2);
+      this.worldGroup.add(abyssMesh);
+      this.waterOverlayMesh = null;
+    } else {
+      const seaMat = new THREE.MeshLambertMaterial({
+        color: pal.seaHex
+      });
+      const seaMesh = new THREE.Mesh(seaGeo, seaMat);
+      seaMesh.position.set(maxWorld.wx / 2, 0.01, maxWorld.wz / 2);
+      seaMesh.receiveShadow = true;
+      this.worldGroup.add(seaMesh);
+      this.waterOverlayMesh = seaMesh;
+    }
 
     // Subtle atmospheric fog wisps & biome dust motes
     this.weatherSystem = new OverworldWeatherSystem(map, this.qualityPreset.particleScale);
     this.scene.add(this.weatherSystem.group);
 
-    // Low coastal reefs far around perimeter
-    const rockGeo = new THREE.DodecahedronGeometry(0.55, 0);
-    const rockMat = new THREE.MeshLambertMaterial({ color: pal.reefHex, flatShading: true });
-    const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, 14);
-    for (let i = 0; i < 14; i++) {
-      const ang = (i / 14) * Math.PI * 2;
-      const rx = maxWorld.wx * 0.82 + (i % 3) * 2.4;
-      const rz = maxWorld.wz * 0.88 + ((i + 1) % 3) * 2.4;
-      _mat4.makeTranslation(maxWorld.wx / 2 + Math.cos(ang) * rx, -0.02, maxWorld.wz / 2 + Math.sin(ang) * rz);
-      _mat4.scale(_vec3A.set(1.0 + (i % 2) * 0.35, 0.4 + (i % 3) * 0.14, 1.0 + (i % 2) * 0.3));
-      rockInst.setMatrixAt(i, _mat4);
+    // Low coastal reefs far around perimeter (Overworld only)
+    if (!this.isDungeonMode) {
+      const rockGeo = new THREE.DodecahedronGeometry(0.55, 0);
+      const rockMat = new THREE.MeshLambertMaterial({ color: pal.reefHex, flatShading: true });
+      const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, 14);
+      for (let i = 0; i < 14; i++) {
+        const ang = (i / 14) * Math.PI * 2;
+        const rx = maxWorld.wx * 0.82 + (i % 3) * 2.4;
+        const rz = maxWorld.wz * 0.88 + ((i + 1) % 3) * 2.4;
+        _mat4.makeTranslation(maxWorld.wx / 2 + Math.cos(ang) * rx, -0.02, maxWorld.wz / 2 + Math.sin(ang) * rz);
+        _mat4.scale(_vec3A.set(1.0 + (i % 2) * 0.35, 0.4 + (i % 3) * 0.14, 1.0 + (i % 2) * 0.3));
+        rockInst.setMatrixAt(i, _mat4);
+      }
+      rockInst.computeBoundingSphere();
+      this.worldGroup.add(rockInst);
     }
-    rockInst.computeBoundingSphere();
-    this.worldGroup.add(rockInst);
 
     // Shared geometries/materials for props, connected castle walls, and raycast proxies
     const pickGeo = new THREE.CircleGeometry(HEX_RADIUS * 0.9, 6);
@@ -565,6 +817,16 @@ export class OverworldSceneManager {
     const bigMountainGeo = new THREE.PlaneGeometry(1.78, 1.62);
     bigMountainGeo.translate(0, 0.72, 0);
 
+    const registerRevealable = (hexKey: string, obj: THREE.Object3D) => {
+      if (this.isDungeonMode) {
+        obj.visible = options?.visibility?.explored.has(hexKey) ?? false;
+        this.dungeonRevealableObjects.push({ hexKey, obj });
+      }
+    };
+
+    const flatDecalGeo = new THREE.PlaneGeometry(HEX_RADIUS * 1.66, HEX_RADIUS * 1.46);
+    flatDecalGeo.rotateX(-Math.PI / 2);
+
     for (let y = 0; y < map.height; y++) {
       for (let x = 0; x < map.width; x++) {
         const tile: WesnothHexTile | undefined = map.tiles[y]?.[x];
@@ -572,16 +834,50 @@ export class OverworldSceneManager {
 
         const { wx, wz } = hexToWorld(x, y);
         const h = tile.terrain.elevation;
+        const hexKey = `${x},${y}`;
 
-        // Raycast proxy disc
+        // Raycast proxy disc (unexplored walls stay at floor height so pick never leaks hidden walls)
+        const pickH = this.isDungeonMode && tile.terrain.isWall ? 0.26 : h;
         const pick = new THREE.Mesh(pickGeo, pickMat);
-        pick.position.set(wx, h + 0.01, wz);
+        pick.position.set(wx, pickH + 0.01, wz);
         pick.userData = { hexX: x, hexY: y };
         this.worldGroup.add(pick);
         this.pickMeshes.push(pick);
 
+        // Toggleable 3D Dungeon Wall blocks (hidden until explored so Shroud remains pitch-black)
+        if (this.isDungeonMode && tile.terrain.isWall && this.wallSideLitMat && this.wallSideFogMat) {
+          const isExplored = options?.visibility?.explored.has(hexKey) ?? false;
+          const isVis = options?.visibility?.visible.has(hexKey) ?? false;
+          const wallBlock = buildDungeonWallBlockMesh(
+            tile,
+            this.tileAtlas,
+            terrainTopMat,
+            isVis ? this.wallSideLitMat : this.wallSideFogMat
+          );
+          if (tile.terrain.emitsLight) {
+            const torchSprite = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.64, 0.64).translate(0, 0.3, 0),
+              getOverlayMat('item_torch')
+            );
+            torchSprite.position.set(0, h * 0.62, 0.48);
+            wallBlock.group.add(torchSprite);
+            this.billboards.push({
+              mesh: torchSprite,
+              baseX: wx,
+              baseY: h * 0.62,
+              baseZ: wz + 0.48,
+              bobPhase: x * 0.5 + y * 0.3
+            });
+          }
+          wallBlock.group.visible = isExplored;
+          this.worldGroup.add(wallBlock.group);
+          this.dungeonWallEntries.push({ hexKey, ...wallBlock });
+          continue;
+        }
+
         // Connected 3D Castle Walls ONLY on exterior edges bordering non-castle terrain
         if (tile.terrain.baseCategory === 'castle') {
+          const castleGroup = new THREE.Group();
           const plan = computeHexAutoTilePlan(map, x, y);
           const placedCorners = new Set<number>();
           for (const dir of plan.castleOuterDirs) {
@@ -590,9 +886,8 @@ export class OverworldSceneManager {
             wall.position.set(wx + mx, h + 0.09, wz + mz);
             wall.rotation.y = rotY;
             wall.castShadow = !this.isSoftwareGl;
-            this.worldGroup.add(wall);
+            castleGroup.add(wall);
 
-            // Crenellation merlon teeth
             for (const offset of [-0.26, 0.26]) {
               const merlon = new THREE.Mesh(castleCrestGeo, castleTrimMat);
               merlon.position.set(
@@ -601,10 +896,9 @@ export class OverworldSceneManager {
                 wz + mz - Math.sin(rotY) * offset
               );
               merlon.rotation.y = rotY;
-              this.worldGroup.add(merlon);
+              castleGroup.add(merlon);
             }
 
-            // Stone corner turret posts join outer wall segments without miter gaps
             const [cA, cB] = DIR_EDGE_CORNERS[dir];
             for (const cornerIdx of [cA, cB]) {
               if (placedCorners.has(cornerIdx)) continue;
@@ -612,14 +906,14 @@ export class OverworldSceneManager {
               const corner = HEX_CORNERS[cornerIdx];
               const turret = new THREE.Mesh(castleCornerGeo, castleTrimMat);
               turret.position.set(wx + corner.x * 0.92, h + 0.135, wz + corner.z * 0.92);
-              this.worldGroup.add(turret);
+              castleGroup.add(turret);
             }
           }
 
           if (tile.terrain.isKeep) {
             const pole = new THREE.Mesh(poleGeo, poleMat);
             pole.position.set(wx - 0.54, h + 0.42, wz - 0.42);
-            this.worldGroup.add(pole);
+            castleGroup.add(pole);
 
             const bannerColor =
               tile.startingPosition === 1
@@ -634,45 +928,83 @@ export class OverworldSceneManager {
               new THREE.MeshLambertMaterial({ color: bannerColor, flatShading: true })
             );
             pennant.position.set(wx - 0.37, h + 0.74, wz - 0.42);
-            this.worldGroup.add(pennant);
+            castleGroup.add(pennant);
+
+            const brazierSprite = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.68, 0.68).translate(0, 0.32, 0),
+              getOverlayMat('item_brazier_lit')
+            );
+            brazierSprite.position.set(wx + 0.46, h + 0.02, wz + 0.34);
+            castleGroup.add(brazierSprite);
+            this.billboards.push({
+              mesh: brazierSprite,
+              baseX: wx + 0.46,
+              baseY: h + 0.02,
+              baseZ: wz + 0.34,
+              bobPhase: x * 0.4 + y * 0.3
+            });
+          }
+
+          this.worldGroup.add(castleGroup);
+          registerRevealable(hexKey, castleGroup);
+        }
+
+        // Major City & Harbor Town 3D Landmarks (Surface Overworld only)
+        if (!this.isDungeonMode) {
+          const citySpec = OVERWORLD_VILLAGES.find(v => v.x === x && v.y === y);
+          if (citySpec && (citySpec.cityTier === 'city' || citySpec.cityTier === 'port')) {
+            const cityPole = new THREE.Mesh(poleGeo, poleMat);
+            cityPole.position.set(wx + 0.44, h + 0.36, wz - 0.34);
+            cityPole.scale.set(0.85, 0.85, 0.85);
+            this.worldGroup.add(cityPole);
+
+            const cityPennant = new THREE.Mesh(
+              pennantGeo,
+              new THREE.MeshLambertMaterial({
+                color: citySpec.cityTier === 'port' ? 0x0ea5e9 : 0xf59e0b,
+                flatShading: true
+              })
+            );
+            cityPennant.position.set(wx + 0.57, h + 0.64, wz - 0.34);
+            cityPennant.scale.set(0.82, 0.82, 0.82);
+            this.worldGroup.add(cityPennant);
           }
         }
 
-        // Major City & Harbor Town 3D Landmarks
-        const citySpec = OVERWORLD_VILLAGES.find(v => v.x === x && v.y === y);
-        if (citySpec && (citySpec.cityTier === 'city' || citySpec.cityTier === 'port')) {
-          const cityPole = new THREE.Mesh(poleGeo, poleMat);
-          cityPole.position.set(wx + 0.44, h + 0.36, wz - 0.34);
-          cityPole.scale.set(0.85, 0.85, 0.85);
-          this.worldGroup.add(cityPole);
-
-          const cityPennant = new THREE.Mesh(
-            pennantGeo,
-            new THREE.MeshLambertMaterial({
-              color: citySpec.cityTier === 'port' ? 0x0ea5e9 : 0xf59e0b,
-              flatShading: true
-            })
-          );
-          cityPennant.position.set(wx + 0.57, h + 0.64, wz - 0.34);
-          cityPennant.scale.set(0.82, 0.82, 0.82);
-          this.worldGroup.add(cityPennant);
+        // Bridges & Dwarven Minecart Rails
+        if (tile.terrain.overlayCategory === 'bridge' || tile.terrain.overlayCategory === 'rails') {
+          const isTexSpan =
+            tile.terrain.overlayCategory === 'rails' ||
+            (tile.terrain.overlayAsset &&
+              (tile.terrain.overlayAsset.startsWith('dun_bridge_') ||
+                tile.terrain.overlayAsset.startsWith('dun_rails_')));
+          if (isTexSpan && tile.terrain.overlayAsset) {
+            const spanMesh = new THREE.Mesh(flatDecalGeo, getOverlayMat(tile.terrain.overlayAsset));
+            spanMesh.position.set(wx, h + 0.024, wz);
+            this.worldGroup.add(spanMesh);
+            registerRevealable(hexKey, spanMesh);
+          } else {
+            const bridgeGrp = new THREE.Group();
+            const deck = new THREE.Mesh(bridgeDeckGeo, bridgeDeckMat);
+            deck.position.set(wx, h + 0.04, wz);
+            bridgeGrp.add(deck);
+            const northRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
+            northRail.position.set(wx, h + 0.12, wz - HEX_RADIUS * 0.31);
+            bridgeGrp.add(northRail);
+            const southRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
+            southRail.position.set(wx, h + 0.12, wz + HEX_RADIUS * 0.31);
+            bridgeGrp.add(southRail);
+            this.worldGroup.add(bridgeGrp);
+            registerRevealable(hexKey, bridgeGrp);
+          }
         }
 
-        // Low-poly 3D Stone Bridge Deck
-        if (tile.terrain.overlayCategory === 'bridge') {
-          const deck = new THREE.Mesh(bridgeDeckGeo, bridgeDeckMat);
-          deck.position.set(wx, h + 0.04, wz);
-          this.worldGroup.add(deck);
-          const northRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
-          northRail.position.set(wx, h + 0.12, wz - HEX_RADIUS * 0.31);
-          this.worldGroup.add(northRail);
-          const southRail = new THREE.Mesh(bridgeRailGeo, castleWallMat);
-          southRail.position.set(wx, h + 0.12, wz + HEX_RADIUS * 0.31);
-          this.worldGroup.add(southRail);
-        }
-
-        // Upright Wesnoth Pixel-Art Overlays (Forests, Villages, Mountains)
-        if (tile.terrain.overlayAsset && tile.terrain.overlayCategory !== 'bridge') {
+        // Upright Wesnoth Pixel-Art Overlays (Forests, Villages, Mountains, Mushrooms, Sanctuaries)
+        if (
+          tile.terrain.overlayAsset &&
+          tile.terrain.overlayCategory !== 'bridge' &&
+          tile.terrain.overlayCategory !== 'rails'
+        ) {
           if (tile.terrain.overlayCategory === 'forest') {
             const offsets = [
               { ox: -0.26, oz: -0.18, s: 0.86 },
@@ -686,6 +1018,7 @@ export class OverworldSceneManager {
               tree.scale.setScalar(o.s);
               tree.castShadow = !this.isSoftwareGl;
               this.worldGroup.add(tree);
+              registerRevealable(hexKey, tree);
               this.billboards.push({
                 mesh: tree,
                 baseX: wx + o.ox,
@@ -694,7 +1027,7 @@ export class OverworldSceneManager {
                 bobPhase: x + y + idx
               });
             });
-          } else if (tile.terrain.baseCode === 'Mm') {
+          } else if (tile.terrain.baseCode === 'Mm' || tile.terrain.baseCode === 'Ms') {
             const peaks = [
               { ox: -0.24, oz: -0.16, s: 0.72 },
               { ox: 0.24, oz: -0.1, s: 0.68 },
@@ -706,6 +1039,7 @@ export class OverworldSceneManager {
               peak.scale.setScalar(p.s);
               peak.castShadow = !this.isSoftwareGl;
               this.worldGroup.add(peak);
+              registerRevealable(hexKey, peak);
               this.billboards.push({
                 mesh: peak,
                 baseX: wx + p.ox,
@@ -718,6 +1052,7 @@ export class OverworldSceneManager {
             const sh = new THREE.Mesh(propShadowGeo, propShadowMat);
             sh.position.set(wx, h + 0.015, wz);
             this.worldGroup.add(sh);
+            registerRevealable(hexKey, sh);
 
             const useVillageGeo = tile.terrain.overlayCategory === 'village';
             const sprite = new THREE.Mesh(
@@ -727,6 +1062,7 @@ export class OverworldSceneManager {
             sprite.position.set(wx, h + 0.01, wz);
             sprite.castShadow = !this.isSoftwareGl;
             this.worldGroup.add(sprite);
+            registerRevealable(hexKey, sprite);
             this.billboards.push({
               mesh: sprite,
               baseX: wx,
@@ -736,6 +1072,136 @@ export class OverworldSceneManager {
             });
           }
         }
+
+        // Surface Overworld Scenic Landmarks & Props
+        if (!this.isDungeonMode) {
+          const landmarkSpec = OVERWORLD_LANDMARKS.find(l => l.x === x && l.y === y);
+          if (landmarkSpec) {
+            const isFlatDecal = landmarkSpec.assetKey === 'scenery_summoning';
+            if (isFlatDecal) {
+              const decalGeo = new THREE.PlaneGeometry(1.18, 1.18);
+              decalGeo.rotateX(-Math.PI / 2);
+              const decal = new THREE.Mesh(decalGeo, getOverlayMat(landmarkSpec.assetKey));
+              decal.position.set(wx, h + 0.025, wz);
+              this.worldGroup.add(decal);
+            } else {
+              const sh = new THREE.Mesh(propShadowGeo, propShadowMat);
+              sh.position.set(wx, h + 0.016, wz);
+              sh.scale.setScalar(Math.min(1.25, landmarkSpec.scale * 0.85));
+              this.worldGroup.add(sh);
+
+              const lmPlaneGeo = new THREE.PlaneGeometry(landmarkSpec.scale, landmarkSpec.scale);
+              lmPlaneGeo.translate(0, landmarkSpec.scale * 0.46 + (landmarkSpec.yOffset ?? 0), 0);
+              const lmSprite = new THREE.Mesh(lmPlaneGeo, getOverlayMat(landmarkSpec.assetKey));
+              lmSprite.position.set(wx, h + 0.015, wz);
+              lmSprite.castShadow = !this.isSoftwareGl;
+              this.worldGroup.add(lmSprite);
+              this.billboards.push({
+                mesh: lmSprite,
+                baseX: wx,
+                baseY: h + 0.015,
+                baseZ: wz,
+                bobPhase: (x + y) * 0.45
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 2b. Dungeon Props, Stairwells & Sanctuaries (revealed progressively as Shroud clears)
+    if (this.isDungeonMode && options?.floorSpec) {
+      const floorSpec = options.floorSpec;
+      for (const prop of floorSpec.props) {
+        const tile = map.tiles[prop.y]?.[prop.x];
+        if (!tile) continue;
+        const { wx, wz } = hexToWorld(prop.x, prop.y);
+        const h = tile.terrain.elevation;
+        const hexKey = `${prop.x},${prop.y}`;
+        const sc = prop.scale ?? 0.92;
+
+        if (prop.flatDecal) {
+          const decalGeo = new THREE.PlaneGeometry(sc, sc);
+          decalGeo.rotateX(-Math.PI / 2);
+          const decal = new THREE.Mesh(decalGeo, getOverlayMat(prop.assetKey));
+          decal.position.set(wx, h + 0.025, wz);
+          this.worldGroup.add(decal);
+          registerRevealable(hexKey, decal);
+        } else {
+          const sh = new THREE.Mesh(propShadowGeo, propShadowMat);
+          sh.position.set(wx, h + 0.016, wz);
+          sh.scale.setScalar(Math.min(1.2, sc * 0.85));
+          this.worldGroup.add(sh);
+          registerRevealable(hexKey, sh);
+
+          const pGeo = new THREE.PlaneGeometry(sc, sc);
+          pGeo.translate(0, sc * 0.46, 0);
+          const pMesh = new THREE.Mesh(pGeo, getOverlayMat(prop.assetKey));
+          pMesh.position.set(wx, h + 0.015, wz);
+          this.worldGroup.add(pMesh);
+          registerRevealable(hexKey, pMesh);
+          this.billboards.push({
+            mesh: pMesh,
+            baseX: wx,
+            baseY: h + 0.015,
+            baseZ: wz,
+            bobPhase: (prop.x + prop.y) * 0.45
+          });
+        }
+      }
+
+      const addStairMarker = (coord: HexCoord, assetKey: string, ringHex: number) => {
+        const tile = map.tiles[coord.y]?.[coord.x];
+        if (!tile) return;
+        const { wx, wz } = hexToWorld(coord.x, coord.y);
+        const h = tile.terrain.elevation;
+        const grp = new THREE.Group();
+
+        const decalGeo = new THREE.PlaneGeometry(1.12, 1.12);
+        decalGeo.rotateX(-Math.PI / 2);
+        const decal = new THREE.Mesh(decalGeo, getOverlayMat(assetKey));
+        decal.position.y = 0.028;
+
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.48, 0.58, 6).rotateX(-Math.PI / 2),
+          new THREE.MeshBasicMaterial({
+            color: ringHex,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        );
+        ring.position.y = 0.036;
+
+        grp.add(decal, ring);
+        grp.position.set(wx, h, wz);
+        this.worldGroup.add(grp);
+        registerRevealable(`${coord.x},${coord.y}`, grp);
+      };
+
+      addStairMarker(floorSpec.stairsUp, 'scenery_trapdoor_closed', 0x38bdf8);
+      if (floorSpec.stairsDown) {
+        addStairMarker(floorSpec.stairsDown, 'scenery_trapdoor_open', 0xfacc15);
+      }
+
+      for (const sanc of floorSpec.sanctuaries) {
+        const tile = map.tiles[sanc.y]?.[sanc.x];
+        if (!tile) continue;
+        const { wx, wz } = hexToWorld(sanc.x, sanc.y);
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.46, 0.56, 6).rotateX(-Math.PI / 2),
+          new THREE.MeshBasicMaterial({
+            color: 0x34d399,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        );
+        ring.position.set(wx, tile.terrain.elevation + 0.036, wz);
+        this.worldGroup.add(ring);
+        registerRevealable(`${sanc.x},${sanc.y}`, ring);
       }
     }
 
@@ -765,6 +1231,19 @@ export class OverworldSceneManager {
     this.pathInstanced.count = 0;
     this.pathInstanced.frustumCulled = false;
     this.worldGroup.add(this.pathInstanced);
+
+    if (!this.isDungeonMode && options?.ruins) {
+      this.syncRuins(options.ruins, map);
+    }
+    if (this.isDungeonMode && options?.visibility) {
+      this.syncDungeonVisuals(
+        map,
+        options.visibility,
+        options.detectedTraps ?? [],
+        options.treasures ?? [],
+        options.allies ?? []
+      );
+    }
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
@@ -838,6 +1317,8 @@ export class OverworldSceneManager {
 
         grp.add(sh, ring, sprite);
         grp.position.set(pw.wx, pElev + 0.02, pw.wz);
+        grp.visible =
+          !this.isDungeonMode || !this.latestVisibility || this.latestVisibility.visible.has(`${p.x},${p.y}`);
         this.scene.add(grp);
 
         this.patrolVisuals.set(p.id, {
@@ -845,10 +1326,16 @@ export class OverworldSceneManager {
           sprite,
           ring,
           targetPos: new THREE.Vector3(pw.wx, pElev + 0.02, pw.wz),
-          phase: p.x * 0.7 + p.y
+          phase: p.x * 0.7 + p.y,
+          hexX: p.x,
+          hexY: p.y
         });
       } else {
         existing.targetPos.set(pw.wx, pElev + 0.02, pw.wz);
+        existing.hexX = p.x;
+        existing.hexY = p.y;
+        existing.group.visible =
+          !this.isDungeonMode || !this.latestVisibility || this.latestVisibility.visible.has(`${p.x},${p.y}`);
       }
     }
 
@@ -856,6 +1343,280 @@ export class OverworldSceneManager {
       if (!seen.has(id)) {
         this.scene.remove(vis.group);
         this.patrolVisuals.delete(id);
+      }
+    }
+  }
+
+  public syncRuins(ruins: OverworldRuinSpec[], map: WesnothMapData) {
+    const seen = new Set<string>();
+    for (const ruin of ruins) {
+      seen.add(ruin.id);
+      if (this.ruinVisuals.has(ruin.id)) continue;
+
+      const tile = map.tiles[ruin.y]?.[ruin.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(ruin.x, ruin.y);
+
+      const grp = new THREE.Group();
+      const shadow = new THREE.Mesh(
+        new THREE.CircleGeometry(0.44, 14).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x050814, transparent: true, opacity: 0.45, depthWrite: false })
+      );
+      shadow.position.y = 0.022;
+
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.48, 0.58, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: 0xa855f7,
+          transparent: true,
+          opacity: 0.9,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.032;
+
+      const spGeo = new THREE.PlaneGeometry(ruin.scale, ruin.scale);
+      spGeo.translate(0, ruin.scale * 0.46, 0);
+      const spMat = new THREE.MeshLambertMaterial({
+        map: this.texCache.getTexture(ruin.assetKey),
+        color: BRAWL_PALETTE.overworld.unitSpriteTintHex,
+        emissive: 0x3b0764,
+        emissiveIntensity: 0.25,
+        alphaTest: 0.4,
+        side: THREE.DoubleSide
+      });
+      const sprite = new THREE.Mesh(spGeo, spMat);
+      sprite.position.y = 0.02;
+      sprite.castShadow = !this.isSoftwareGl;
+
+      grp.add(shadow, ring, sprite);
+      grp.position.set(wx, h + 0.015, wz);
+      this.scene.add(grp);
+
+      this.ruinVisuals.set(ruin.id, {
+        group: grp,
+        sprite,
+        ring,
+        baseY: 0.02,
+        phase: ruin.x * 0.5 + ruin.y * 0.7
+      });
+    }
+
+    for (const [id, vis] of this.ruinVisuals.entries()) {
+      if (!seen.has(id)) {
+        this.scene.remove(vis.group);
+        this.ruinVisuals.delete(id);
+      }
+    }
+  }
+
+  public syncDungeonVisuals(
+    map: WesnothMapData,
+    visibility: ShroudVisibilityState,
+    detectedTraps: DungeonTrapSpec[],
+    treasures: DungeonTreasureSpec[],
+    allies: DungeonAllySpec[]
+  ) {
+    this.latestVisibility = visibility;
+    this.tileAtlas?.updateDungeonVisibility(map, visibility);
+
+    for (const entry of this.dungeonWallEntries) {
+      const explored = visibility.explored.has(entry.hexKey);
+      const visible = visibility.visible.has(entry.hexKey);
+      entry.group.visible = explored;
+      if (this.wallSideLitMat && this.wallSideFogMat) {
+        entry.sideMesh.material = visible ? this.wallSideLitMat : this.wallSideFogMat;
+      }
+    }
+
+    for (const item of this.dungeonRevealableObjects) {
+      item.obj.visible = visibility.explored.has(item.hexKey);
+    }
+
+    for (const vis of this.patrolVisuals.values()) {
+      vis.group.visible = visibility.visible.has(`${vis.hexX},${vis.hexY}`);
+    }
+
+    // Treasures (gold ring + chest/relic sprite, visible once explored)
+    const seenTreasures = new Set<string>();
+    for (const t of treasures) {
+      seenTreasures.add(t.id);
+      const hexKey = `${t.x},${t.y}`;
+      const existing = this.dungeonTreasureVisuals.get(t.id);
+      if (existing) {
+        existing.group.visible = visibility.explored.has(hexKey);
+        continue;
+      }
+      const tile = map.tiles[t.y]?.[t.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(t.x, t.y);
+      const grp = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.4, 0.48, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: 0xfacc15,
+          transparent: true,
+          opacity: 0.9,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.032;
+      const spGeo = new THREE.PlaneGeometry(0.92, 0.92);
+      spGeo.translate(0, 0.4, 0);
+      const sprite = new THREE.Mesh(
+        spGeo,
+        new THREE.MeshLambertMaterial({
+          map: this.texCache.getTexture(t.assetKey),
+          emissive: 0x451a03,
+          emissiveIntensity: 0.22,
+          alphaTest: 0.4,
+          side: THREE.DoubleSide
+        })
+      );
+      sprite.position.y = 0.02;
+      grp.add(ring, sprite);
+      grp.position.set(wx, h + 0.02, wz);
+      grp.visible = visibility.explored.has(hexKey);
+      this.scene.add(grp);
+      this.dungeonTreasureVisuals.set(t.id, {
+        group: grp,
+        hexKey,
+        sprite,
+        ring,
+        baseY: 0.02,
+        phase: t.x * 0.7 + t.y
+      });
+    }
+    for (const [id, vis] of this.dungeonTreasureVisuals.entries()) {
+      if (!seenTreasures.has(id)) {
+        this.scene.remove(vis.group);
+        this.dungeonTreasureVisuals.delete(id);
+      }
+    }
+
+    // Captive Allies (emerald ring + hero sprite + iron cage overlay)
+    const seenAllies = new Set<string>();
+    for (const a of allies) {
+      seenAllies.add(a.id);
+      const hexKey = `${a.x},${a.y}`;
+      const existing = this.dungeonAllyVisuals.get(a.id);
+      if (existing) {
+        existing.group.visible = visibility.explored.has(hexKey);
+        continue;
+      }
+      const tile = map.tiles[a.y]?.[a.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(a.x, a.y);
+      const grp = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.5, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: 0x34d399,
+          transparent: true,
+          opacity: 0.92,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.032;
+      const spGeo = new THREE.PlaneGeometry(1.06, 1.06);
+      spGeo.translate(0, 0.48, 0);
+      const sprite = new THREE.Mesh(
+        spGeo,
+        new THREE.MeshLambertMaterial({
+          map: this.texCache.getTexture(a.spriteAsset),
+          emissive: 0x064e3b,
+          emissiveIntensity: 0.24,
+          alphaTest: 0.4,
+          side: THREE.DoubleSide
+        })
+      );
+      sprite.position.y = 0.02;
+      const cageGeo = new THREE.PlaneGeometry(1.16, 1.16);
+      cageGeo.translate(0, 0.54, 0);
+      const cage = new THREE.Mesh(
+        cageGeo,
+        new THREE.MeshLambertMaterial({
+          map: this.texCache.getTexture('item_cage'),
+          alphaTest: 0.4,
+          side: THREE.DoubleSide
+        })
+      );
+      cage.position.set(0, 0.02, 0.06);
+      grp.add(ring, sprite, cage);
+      grp.position.set(wx, h + 0.02, wz);
+      grp.visible = visibility.explored.has(hexKey);
+      this.scene.add(grp);
+      this.dungeonAllyVisuals.set(a.id, {
+        group: grp,
+        hexKey,
+        sprite,
+        ring,
+        baseY: 0.02,
+        phase: a.x * 0.5 + a.y * 0.8
+      });
+    }
+    for (const [id, vis] of this.dungeonAllyVisuals.entries()) {
+      if (!seenAllies.has(id)) {
+        this.scene.remove(vis.group);
+        this.dungeonAllyVisuals.delete(id);
+      }
+    }
+
+    // Detected Traps (orange-crimson hazard ring + Wesnoth rune/slab decal, visible only within torchlight LoS)
+    const seenTraps = new Set<string>();
+    for (const tr of detectedTraps) {
+      seenTraps.add(tr.id);
+      const hexKey = `${tr.x},${tr.y}`;
+      const existing = this.dungeonTrapVisuals.get(tr.id);
+      if (existing) {
+        existing.group.visible = visibility.visible.has(hexKey);
+        continue;
+      }
+      const tile = map.tiles[tr.y]?.[tr.x];
+      const h = tile ? tile.terrain.elevation : 0.26;
+      const { wx, wz } = hexToWorld(tr.x, tr.y);
+      const grp = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.4, 0.49, 6).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: 0xf97316,
+          transparent: true,
+          opacity: 0.92,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.position.y = 0.034;
+      const decalGeo = new THREE.PlaneGeometry(0.95, 0.95);
+      decalGeo.rotateX(-Math.PI / 2);
+      const decal = new THREE.Mesh(
+        decalGeo,
+        new THREE.MeshBasicMaterial({
+          map: this.texCache.getTexture(tr.assetKey),
+          transparent: true,
+          depthWrite: false
+        })
+      );
+      decal.position.y = 0.026;
+      grp.add(decal, ring);
+      grp.position.set(wx, h, wz);
+      grp.visible = visibility.visible.has(hexKey);
+      this.scene.add(grp);
+      this.dungeonTrapVisuals.set(tr.id, {
+        group: grp,
+        hexKey,
+        ring,
+        baseY: 0.026,
+        phase: tr.x * 0.9 + tr.y * 0.4
+      });
+    }
+    for (const [id, vis] of this.dungeonTrapVisuals.entries()) {
+      if (!seenTraps.has(id)) {
+        this.scene.remove(vis.group);
+        this.dungeonTrapVisuals.delete(id);
       }
     }
   }
@@ -873,8 +1634,12 @@ export class OverworldSceneManager {
       const grp = new THREE.Group();
       const ringColor =
         poi.kind === 'recruit' ? 0x34d399 : poi.kind === 'shrine' ? 0x38bdf8 : 0xfacc15;
-      const beaconColor =
-        poi.kind === 'recruit' ? 0x10b981 : poi.kind === 'shrine' ? 0x0ea5e9 : 0xf59e0b;
+
+      const shadow = new THREE.Mesh(
+        new THREE.CircleGeometry(0.36, 12).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x050814, transparent: true, opacity: 0.38, depthWrite: false })
+      );
+      shadow.position.y = 0.022;
 
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.42, 0.5, 6).rotateX(-Math.PI / 2),
@@ -888,22 +1653,26 @@ export class OverworldSceneManager {
       );
       ring.position.y = 0.032;
 
-      const beaconGeo =
-        poi.kind === 'chest'
-          ? new THREE.BoxGeometry(0.32, 0.24, 0.24)
-          : new THREE.OctahedronGeometry(0.22, 0);
-      const beaconMat = new THREE.MeshLambertMaterial({
-        color: beaconColor,
-        emissive: beaconColor,
-        emissiveIntensity: 0.35,
-        flatShading: true
+      const assetKey = getPoiWesnothAsset(poi);
+      const isRecruit = poi.kind === 'recruit';
+      const isShrine = poi.kind === 'shrine';
+      const spriteSize = isRecruit ? 1.12 : isShrine ? 1.18 : 0.96;
+      const spGeo = new THREE.PlaneGeometry(spriteSize, spriteSize);
+      spGeo.translate(0, spriteSize * 0.44, 0);
+      const spMat = new THREE.MeshLambertMaterial({
+        map: this.texCache.getTexture(assetKey),
+        color: BRAWL_PALETTE.overworld.unitSpriteTintHex,
+        emissive: isShrine ? 0x0c4a6e : 0x1e293b,
+        emissiveIntensity: isShrine ? 0.28 : 0.16,
+        alphaTest: 0.4,
+        side: THREE.DoubleSide
       });
-      const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-      const baseY = poi.kind === 'recruit' ? 0.95 : 0.45;
+      const beacon = new THREE.Mesh(spGeo, spMat);
+      const baseY = 0.03;
       beacon.position.y = baseY;
       beacon.castShadow = !this.isSoftwareGl;
 
-      grp.add(ring, beacon);
+      grp.add(shadow, ring, beacon);
       grp.position.set(wx, h + 0.02, wz);
       this.scene.add(grp);
 
@@ -936,7 +1705,13 @@ export class OverworldSceneManager {
 
       const grp = new THREE.Group();
       const isMerchant = ev.category === 'merchant';
-      const ringColor = isMerchant ? 0xf59e0b : 0x2dd4bf;
+      const ringColor = isMerchant ? 0xf59e0b : ev.category === 'omen' ? 0x38bdf8 : 0x2dd4bf;
+
+      const shadow = new THREE.Mesh(
+        new THREE.CircleGeometry(0.38, 12).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x050814, transparent: true, opacity: 0.4, depthWrite: false })
+      );
+      shadow.position.y = 0.022;
 
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.45, 0.54, 6).rotateX(-Math.PI / 2),
@@ -950,71 +1725,31 @@ export class OverworldSceneManager {
       );
       ring.position.y = 0.032;
 
-      const propGroup = new THREE.Group();
-      if (isMerchant) {
-        // Composite Traveling Merchant Caravan: wooden bed + 4 wheels + crimson canopy + brass lantern
-        const woodMat = new THREE.MeshLambertMaterial({ color: 0x7c4a26, flatShading: true });
-        const canopyMat = new THREE.MeshLambertMaterial({ color: 0xb91c1c, flatShading: true });
-        const trimMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b, flatShading: true });
-        const wheelMat = new THREE.MeshLambertMaterial({ color: 0x3b2618, flatShading: true });
+      const assetKey = getWorldEventWesnothAsset(ev.templateId, ev.category);
+      const spriteSize = isMerchant ? 1.18 : 0.98;
+      const spGeo = new THREE.PlaneGeometry(spriteSize, spriteSize);
+      spGeo.translate(0, spriteSize * 0.44, 0);
+      const spMat = new THREE.MeshLambertMaterial({
+        map: this.texCache.getTexture(assetKey),
+        color: BRAWL_PALETTE.overworld.unitSpriteTintHex,
+        emissive: isMerchant ? 0x451a03 : 0x134e4a,
+        emissiveIntensity: 0.2,
+        alphaTest: 0.4,
+        side: THREE.DoubleSide
+      });
+      const prop = new THREE.Mesh(spGeo, spMat);
+      prop.position.y = 0.03;
+      prop.castShadow = !this.isSoftwareGl;
 
-        const bed = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.3), woodMat);
-        bed.position.y = 0.14;
-        const canopy = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.44, 6).rotateZ(Math.PI / 2), canopyMat);
-        canopy.position.y = 0.3;
-        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.05, 0.32), trimMat);
-        stripe.position.y = 0.22;
-        const lantern = new THREE.Mesh(
-          new THREE.OctahedronGeometry(0.08, 0),
-          new THREE.MeshLambertMaterial({ color: 0xfde047, emissive: 0xf59e0b, emissiveIntensity: 0.55 })
-        );
-        lantern.position.set(0.25, 0.28, 0);
-
-        const wheelGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.05, 8).rotateX(Math.PI / 2);
-        [
-          [-0.14, 0.09, 0.17],
-          [0.14, 0.09, 0.17],
-          [-0.14, 0.09, -0.17],
-          [0.14, 0.09, -0.17]
-        ].forEach(([lx, ly, lz]) => {
-          const w = new THREE.Mesh(wheelGeo, wheelMat);
-          w.position.set(lx, ly, lz);
-          propGroup.add(w);
-        });
-
-        propGroup.add(bed, canopy, stripe, lantern);
-      } else {
-        // Composite Supply Cache / Relic Crate: iron-banded chest + side crate + floating teal flare diamond
-        const crateMat = new THREE.MeshLambertMaterial({ color: 0x85532b, flatShading: true });
-        const ironMat = new THREE.MeshLambertMaterial({ color: 0x475569, flatShading: true });
-        const flareMat = new THREE.MeshLambertMaterial({
-          color: 0x2dd4bf,
-          emissive: 0x14b8a6,
-          emissiveIntensity: 0.45,
-          flatShading: true
-        });
-
-        const chest = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.22, 0.24), crateMat);
-        chest.position.y = 0.12;
-        const band = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.06, 0.26), ironMat);
-        band.position.y = 0.14;
-        const sidePack = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.16), crateMat);
-        sidePack.position.set(-0.22, 0.08, 0.1);
-        const flare = new THREE.Mesh(new THREE.OctahedronGeometry(0.13, 0), flareMat);
-        flare.position.set(0, 0.44, 0);
-
-        propGroup.add(chest, band, sidePack, flare);
-      }
-
-      grp.add(ring, propGroup);
+      grp.add(shadow, ring, prop);
       grp.position.set(wx, h + 0.02, wz);
       this.scene.add(grp);
 
       this.worldEventVisuals.set(ev.id, {
         group: grp,
-        prop: propGroup,
+        prop,
         ring,
-        baseY: 0,
+        baseY: 0.03,
         phase: ev.x * 0.7 + ev.y * 0.5
       });
     }
@@ -1040,10 +1775,19 @@ export class OverworldSceneManager {
 
   public showReachableHexes(reachable: ReachableHex[], map: WesnothMapData, patrols: ActivePatrolState[]) {
     if (!this.frontierInstanced) return;
+    const filteredReachable =
+      this.isDungeonMode && this.latestVisibility
+        ? reachable.filter(r => this.latestVisibility!.explored.has(`${r.x},${r.y}`))
+        : reachable;
+    const visiblePatrols =
+      this.isDungeonMode && this.latestVisibility
+        ? patrols.filter(p => this.latestVisibility!.visible.has(`${p.x},${p.y}`))
+        : patrols;
+
     const edges = computeReachableFrontierEdges(
       map,
-      reachable.map(r => ({ x: r.x, y: r.y })),
-      patrols.map(p => ({ x: p.x, y: p.y }))
+      filteredReachable.map(r => ({ x: r.x, y: r.y })),
+      visiblePatrols.map(p => ({ x: p.x, y: p.y }))
     );
 
     const count = Math.min(edges.length, 600);
@@ -1088,7 +1832,10 @@ export class OverworldSceneManager {
     const tile = map.tiles[y]?.[x];
     if (!tile) return;
     const { wx, wz } = hexToWorld(x, y);
-    this.hoverHexRing.position.set(wx, tile.terrain.elevation + 0.035, wz);
+    const hideWallHeight =
+      this.isDungeonMode && tile.terrain.isWall && !(this.latestVisibility?.explored.has(`${x},${y}`) ?? false);
+    const elev = hideWallHeight ? 0.26 : tile.terrain.elevation;
+    this.hoverHexRing.position.set(wx, elev + 0.035, wz);
   }
 
   public rotateCamera(deltaYaw: number) {
@@ -1254,14 +2001,44 @@ export class OverworldSceneManager {
     }
 
     for (const poiVis of this.poiVisuals.values()) {
-      poiVis.beacon.rotation.y = elapsed * 1.4 + poiVis.phase;
-      poiVis.beacon.position.y = poiVis.baseY + Math.sin(elapsed * 2.6 + poiVis.phase) * 0.07;
+      poiVis.beacon.rotation.y = camYaw;
+      poiVis.beacon.position.y = poiVis.baseY + Math.sin(elapsed * 2.4 + poiVis.phase) * 0.035;
       poiVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.5 + poiVis.phase) * 0.06);
     }
 
     for (const evVis of this.worldEventVisuals.values()) {
+      evVis.prop.rotation.y = camYaw;
       evVis.prop.position.y = evVis.baseY + Math.sin(elapsed * 2.2 + evVis.phase) * 0.03;
       evVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.8 + evVis.phase) * 0.07);
+    }
+
+    for (const ruinVis of this.ruinVisuals.values()) {
+      ruinVis.sprite.rotation.y = camYaw;
+      ruinVis.sprite.position.y = ruinVis.baseY + Math.sin(elapsed * 1.8 + ruinVis.phase) * 0.022;
+      ruinVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.2 + ruinVis.phase) * 0.06);
+    }
+
+    for (const trVis of this.dungeonTreasureVisuals.values()) {
+      if (trVis.sprite) {
+        trVis.sprite.rotation.y = camYaw;
+        trVis.sprite.position.y = trVis.baseY + Math.sin(elapsed * 2.5 + trVis.phase) * 0.028;
+      }
+      trVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.6 + trVis.phase) * 0.05);
+    }
+
+    for (const alVis of this.dungeonAllyVisuals.values()) {
+      alVis.group.children.forEach(c => {
+        if (c !== alVis.ring) c.rotation.y = camYaw;
+      });
+      alVis.ring.scale.setScalar(1 + Math.sin(elapsed * 3.4 + alVis.phase) * 0.06);
+    }
+
+    for (const trapVis of this.dungeonTrapVisuals.values()) {
+      trapVis.ring.scale.setScalar(1 + Math.sin(elapsed * 5.2 + trapVis.phase) * 0.08);
+    }
+
+    if (this.isDungeonMode) {
+      this.heroTorchLight.intensity = 2.65 + Math.sin(elapsed * 7.5) * 0.14;
     }
 
     if (this.waterOverlayMesh) {

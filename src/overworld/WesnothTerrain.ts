@@ -16,18 +16,22 @@ export type WesnothBaseCategory =
   | 'castle'
   | 'snow'
   | 'volcanic'
-  | 'lava';
+  | 'lava'
+  | 'dungeon'
+  | 'cave'
+  | 'chasm'
+  | 'wall';
 
-export type WesnothOverlayCategory = 'none' | 'forest' | 'village' | 'bridge';
+export type WesnothOverlayCategory = 'none' | 'forest' | 'village' | 'bridge' | 'mushrooms' | 'rails';
 
 export interface WesnothMovetypeSpec {
   id: WesnothMovetypeId;
   name: string;
   description: string;
   maxMp: number;
-  movementCosts: Record<WesnothBaseCategory | 'forest' | 'village', number>;
+  movementCosts: Record<WesnothBaseCategory | 'forest' | 'village' | 'mushrooms', number>;
   /** Wesnoth defense = % chance to avoid being hit (100 - hitChance) */
-  defense: Record<WesnothBaseCategory | 'forest' | 'village', number>;
+  defense: Record<WesnothBaseCategory | 'forest' | 'village' | 'mushrooms', number>;
 }
 
 /**
@@ -39,7 +43,7 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
   smallfoot: {
     id: 'smallfoot',
     name: 'Vanguard Foot',
-    description: 'Balanced infantry march: nimble in castles/villages, steady across hills.',
+    description: 'Balanced infantry march: nimble in castles/villages, steady across hills & catacombs.',
     maxMp: 5,
     movementCosts: {
       flat: 1,
@@ -53,8 +57,13 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 2,
       volcanic: 1,
       lava: 99,
+      dungeon: 1,
+      cave: 2,
+      chasm: 99,
+      wall: 99,
       forest: 2,
-      village: 1
+      village: 1,
+      mushrooms: 2
     },
     defense: {
       flat: 40,
@@ -68,14 +77,19 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 30,
       volcanic: 40,
       lava: 0,
+      dungeon: 50,
+      cave: 40,
+      chasm: 0,
+      wall: 0,
       forest: 50,
-      village: 60
+      village: 60,
+      mushrooms: 50
     }
   },
   mounted: {
     id: 'mounted',
     name: 'Cavalry Stride',
-    description: 'Fast 7 MP across roads & plains; slowed by forests & impassable mountains.',
+    description: 'Fast 7 MP across roads & plains; slowed by forests, caves & impassable mountains.',
     maxMp: 7,
     movementCosts: {
       flat: 1,
@@ -89,8 +103,13 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 2,
       volcanic: 2,
       lava: 99,
+      dungeon: 1,
+      cave: 3,
+      chasm: 99,
+      wall: 99,
       forest: 3,
-      village: 1
+      village: 1,
+      mushrooms: 3
     },
     defense: {
       flat: 40,
@@ -104,14 +123,19 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 30,
       volcanic: 35,
       lava: 0,
+      dungeon: 40,
+      cave: 30,
+      chasm: 0,
+      wall: 0,
       forest: 30,
-      village: 40
+      village: 40,
+      mushrooms: 30
     }
   },
   woodland: {
     id: 'woodland',
     name: 'Woodland Ranger',
-    description: '1 MP through forests with 70% forest cover defense.',
+    description: '1 MP through forests & mushrooms with 70% cover and keen subterranean trap sense.',
     maxMp: 6,
     movementCosts: {
       flat: 1,
@@ -125,8 +149,13 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 2,
       volcanic: 1,
       lava: 99,
+      dungeon: 1,
+      cave: 2,
+      chasm: 99,
+      wall: 99,
       forest: 1,
-      village: 1
+      village: 1,
+      mushrooms: 1
     },
     defense: {
       flat: 40,
@@ -140,14 +169,19 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 40,
       volcanic: 45,
       lava: 0,
+      dungeon: 50,
+      cave: 45,
+      chasm: 0,
+      wall: 0,
       forest: 70,
-      village: 60
+      village: 60,
+      mushrooms: 65
     }
   },
   orcishfoot: {
     id: 'orcishfoot',
     name: 'Orcish March',
-    description: 'Hardened rough-terrain march: 1 MP hills, 2 MP mountains.',
+    description: 'Hardened rough-terrain march: 1 MP hills & caverns, 2 MP mountains.',
     maxMp: 5,
     movementCosts: {
       flat: 1,
@@ -161,8 +195,13 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 2,
       volcanic: 1,
       lava: 99,
+      dungeon: 1,
+      cave: 1,
+      chasm: 99,
+      wall: 99,
       forest: 2,
-      village: 1
+      village: 1,
+      mushrooms: 2
     },
     defense: {
       flat: 40,
@@ -176,8 +215,13 @@ export const WESNOTH_MOVETYPES: Record<WesnothMovetypeId, WesnothMovetypeSpec> =
       snow: 35,
       volcanic: 50,
       lava: 0,
+      dungeon: 50,
+      cave: 50,
+      chasm: 0,
+      wall: 0,
       forest: 50,
-      village: 60
+      village: 60,
+      mushrooms: 50
     }
   }
 };
@@ -196,6 +240,10 @@ export interface WesnothTerrainInfo {
   biomeTint?: string;
   biomeTintAlpha?: number;
   isLava?: boolean;
+  isChasm?: boolean;
+  isWall?: boolean;
+  blocksLos?: boolean;
+  emitsLight?: boolean;
   isKeep: boolean;
   isVillage: boolean;
   isWater: boolean;
@@ -212,6 +260,10 @@ interface BaseTerrainDef {
   biomeTint?: string;
   biomeTintAlpha?: number;
   isLava?: boolean;
+  isChasm?: boolean;
+  isWall?: boolean;
+  blocksLos?: boolean;
+  emitsLight?: boolean;
   isKeep?: boolean;
   isWater?: boolean;
   encounterChance: number;
@@ -323,9 +375,7 @@ const BASE_TERRAIN_DEFS: Record<string, BaseTerrainDef> = {
     category: 'lava',
     elevation: 0.07,
     sideColor: 0xb83314,
-    asset: 'water_ocean',
-    biomeTint: '#ea580c',
-    biomeTintAlpha: 0.85,
+    asset: 'dun_lava',
     isLava: true,
     encounterChance: 0
   },
@@ -396,6 +446,131 @@ const BASE_TERRAIN_DEFS: Record<string, BaseTerrainDef> = {
     asset: 'keep_tile',
     isKeep: true,
     encounterChance: 0
+  },
+  Iyd: {
+    name: 'Catacomb Stone',
+    category: 'dungeon',
+    elevation: 0.26,
+    sideColor: 0x3f3934,
+    asset: 'dun_stone_floor',
+    encounterChance: 0.04
+  },
+  Iya: {
+    name: 'Ancient Paving',
+    category: 'dungeon',
+    elevation: 0.26,
+    sideColor: 0x383430,
+    asset: 'dun_stone_ancient',
+    encounterChance: 0.04
+  },
+  Urb: {
+    name: 'Dark Flagstones',
+    category: 'dungeon',
+    elevation: 0.26,
+    sideColor: 0x2b3038,
+    asset: 'dun_flagstones',
+    encounterChance: 0.05
+  },
+  Ur: {
+    name: 'Cavern Path',
+    category: 'dungeon',
+    elevation: 0.26,
+    sideColor: 0x473d35,
+    asset: 'dun_cave_path',
+    encounterChance: 0.05
+  },
+  Uu: {
+    name: 'Cavern Floor',
+    category: 'cave',
+    elevation: 0.28,
+    sideColor: 0x3b3532,
+    asset: 'dun_cave_floor',
+    encounterChance: 0.08
+  },
+  Uue: {
+    name: 'Earthy Cavern',
+    category: 'cave',
+    elevation: 0.28,
+    sideColor: 0x4b3c31,
+    asset: 'dun_cave_earthy',
+    encounterChance: 0.09
+  },
+  Qxu: {
+    name: 'Abyssal Chasm',
+    category: 'chasm',
+    elevation: 0.02,
+    sideColor: 0x050609,
+    asset: 'dun_chasm',
+    isChasm: true,
+    encounterChance: 0
+  },
+  Cud: {
+    name: 'Dwarven Bastion',
+    category: 'castle',
+    elevation: 0.36,
+    sideColor: 0x626973,
+    asset: 'dun_dwarven_castle',
+    encounterChance: 0
+  },
+  Kud: {
+    name: 'Dwarven Keep',
+    category: 'castle',
+    elevation: 0.48,
+    sideColor: 0x767f8c,
+    asset: 'dun_dwarven_keep',
+    isKeep: true,
+    encounterChance: 0
+  },
+  Xos: {
+    name: 'Catacomb Wall',
+    category: 'wall',
+    elevation: 0.82,
+    sideColor: 0x242830,
+    asset: 'dun_wall_stone',
+    isWall: true,
+    blocksLos: true,
+    encounterChance: 0
+  },
+  Xol: {
+    name: 'Torchlit Wall',
+    category: 'wall',
+    elevation: 0.82,
+    sideColor: 0x3b2c1f,
+    asset: 'dun_wall_stone_lit',
+    isWall: true,
+    blocksLos: true,
+    emitsLight: true,
+    encounterChance: 0
+  },
+  Xoc: {
+    name: 'Ossuary Wall',
+    category: 'wall',
+    elevation: 0.82,
+    sideColor: 0x332d2b,
+    asset: 'dun_wall_catacomb',
+    isWall: true,
+    blocksLos: true,
+    encounterChance: 0
+  },
+  Xuc: {
+    name: 'Cavern Rock Wall',
+    category: 'wall',
+    elevation: 0.86,
+    sideColor: 0x262324,
+    asset: 'dun_wall_rough',
+    isWall: true,
+    blocksLos: true,
+    encounterChance: 0
+  },
+  Xum: {
+    name: 'Mine Timber Wall',
+    category: 'wall',
+    elevation: 0.84,
+    sideColor: 0x3c2c20,
+    asset: 'dun_wall_mine',
+    isWall: true,
+    blocksLos: true,
+    encounterChance: 0
   }
 };
 
@@ -427,6 +602,11 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
     overlayAsset = 'forest_deciduous';
     name = `${baseDef.name} · Deciduous Woods`;
     encounterChance = Math.max(encounterChance, 0.2);
+  } else if (overlayCode === '^Uf') {
+    overlayCategory = 'mushrooms';
+    overlayAsset = 'dun_mushrooms';
+    name = `${baseDef.name} · Mushroom Grove`;
+    encounterChance = Math.max(encounterChance, 0.1);
   } else if (overlayCode === '^Vh') {
     overlayCategory = 'village';
     overlayAsset = 'village_human';
@@ -446,12 +626,41 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
     name = baseCode === 'Rd' ? 'Caldera Watch Outpost' : 'Hill Stone Village';
     isVillage = true;
     encounterChance = 0;
+  } else if (overlayCode === '^Vu') {
+    overlayCategory = 'village';
+    overlayAsset = 'dun_village_cave';
+    name = 'Subterranean Sanctuary';
+    isVillage = true;
+    encounterChance = 0;
   } else if (overlayCode === '^Bw|' || overlayCode === '^Bw/' || overlayCode === '^Bw\\') {
     overlayCategory = 'bridge';
     overlayAsset = 'bridge_stone';
     name = baseCode === 'Qlf' ? 'Obsidian Span' : 'Stone Bridge';
     elevation = Math.max(elevation, baseCode === 'Qlf' ? 0.28 : 0.24);
     encounterChance = 0.03;
+  } else if (overlayCode === '^Bsb|' || overlayCode === '^Bsb/' || overlayCode === '^Bsb\\') {
+    overlayCategory = 'bridge';
+    overlayAsset =
+      overlayCode === '^Bsb/'
+        ? 'dun_bridge_chasm_ne'
+        : overlayCode === '^Bsb\\'
+          ? 'dun_bridge_chasm_nw'
+          : 'dun_bridge_chasm_ns';
+    name = baseCode === 'Qlf' ? 'Abyssal Magma Span' : 'Arched Chasm Bridge';
+    elevation = Math.max(elevation, 0.27);
+    encounterChance = 0.02;
+  } else if (overlayCode === '^Br|' || overlayCode === '^Br/' || overlayCode === '^Br\\') {
+    const spansHazard = baseDef.isChasm || baseDef.isLava || baseDef.isWater;
+    overlayCategory = spansHazard ? 'bridge' : 'rails';
+    overlayAsset =
+      overlayCode === '^Br/'
+        ? 'dun_rails_ne'
+        : overlayCode === '^Br\\'
+          ? 'dun_rails_nw'
+          : 'dun_rails_ns';
+    name = spansHazard ? 'Minecart Trestle' : `${baseDef.name} · Rails`;
+    if (spansHazard) elevation = Math.max(elevation, 0.27);
+    encounterChance = 0.02;
   }
 
   return {
@@ -468,33 +677,42 @@ export function resolveWesnothTerrain(rawCode: string): WesnothTerrainInfo {
     biomeTint: baseDef.biomeTint,
     biomeTintAlpha: baseDef.biomeTintAlpha,
     isLava: Boolean(baseDef.isLava && overlayCategory !== 'bridge'),
+    isChasm: Boolean(baseDef.isChasm && overlayCategory !== 'bridge'),
+    isWall: Boolean(baseDef.isWall),
+    blocksLos: Boolean(baseDef.blocksLos),
+    emitsLight: Boolean(baseDef.emitsLight),
     isKeep: Boolean(baseDef.isKeep),
     isVillage,
     isWater: Boolean(baseDef.isWater && overlayCategory !== 'bridge'),
     encounterChance,
-    battleBiomeSeed: baseCode.charCodeAt(0) * 17 + baseCode.charCodeAt(1) * 7 + (overlayCode?.charCodeAt(1) ?? 0)
+    battleBiomeSeed:
+      baseDef.category === 'dungeon' || baseDef.category === 'cave' || baseDef.category === 'chasm' || baseCode === 'Cud' || baseCode === 'Kud'
+        ? 400 + baseCode.charCodeAt(0) * 17 + baseCode.charCodeAt(1) * 7
+        : baseCode.charCodeAt(0) * 17 + baseCode.charCodeAt(1) * 7 + (overlayCode?.charCodeAt(1) ?? 0)
   };
 }
 
 /**
  * Wesnoth alias resolution (`aliasof`):
- * - Bridges (`^Bw*`) take the BEST (minimum cost / maximum defense) of underlying water and flat!
- * - Forests/Villages use their overlay category if it imposes higher cost or better defense,
- *   matching Wesnoth `mvt_alias=-,_bas,Ft` (combined max cost with base, or village=1).
+ * - Bridges (`^Bw*`, `^Bsb*`, hazard `^Br*`) take the BEST (minimum cost / maximum defense) of underlying tile and flat!
+ * - Minecart rails (`^Br*` on cave/floor) move like flat stone (1 MP).
+ * - Forests/Mushrooms/Villages use their overlay category if it imposes higher cost or better defense.
  */
 export function getWesnothMovementCost(terrain: WesnothTerrainInfo, movetypeId: WesnothMovetypeId): number {
   const mt = WESNOTH_MOVETYPES[movetypeId];
   const baseCost = mt.movementCosts[terrain.baseCategory];
 
-  if (terrain.overlayCategory === 'bridge') {
+  if (terrain.overlayCategory === 'bridge' || terrain.overlayCategory === 'rails') {
     return Math.min(baseCost, mt.movementCosts.flat);
   }
   if (terrain.overlayCategory === 'village') {
     return mt.movementCosts.village;
   }
   if (terrain.overlayCategory === 'forest') {
-    // Wesnoth mvt_alias=-,_bas,Ft takes max of base and forest (e.g., forest on hills = max(2,2) = 2)
     return Math.max(baseCost, mt.movementCosts.forest);
+  }
+  if (terrain.overlayCategory === 'mushrooms') {
+    return Math.max(baseCost, mt.movementCosts.mushrooms);
   }
   return baseCost;
 }
@@ -503,7 +721,7 @@ export function getWesnothDefensePct(terrain: WesnothTerrainInfo, movetypeId: We
   const mt = WESNOTH_MOVETYPES[movetypeId];
   const baseDef = mt.defense[terrain.baseCategory];
 
-  if (terrain.overlayCategory === 'bridge') {
+  if (terrain.overlayCategory === 'bridge' || terrain.overlayCategory === 'rails') {
     return Math.max(baseDef, mt.defense.flat);
   }
   if (terrain.overlayCategory === 'village') {
@@ -513,6 +731,9 @@ export function getWesnothDefensePct(terrain: WesnothTerrainInfo, movetypeId: We
     return terrain.baseCategory === 'flat'
       ? mt.defense.forest
       : Math.max(baseDef, mt.defense.forest);
+  }
+  if (terrain.overlayCategory === 'mushrooms') {
+    return Math.max(baseDef, mt.defense.mushrooms);
   }
   return baseDef;
 }

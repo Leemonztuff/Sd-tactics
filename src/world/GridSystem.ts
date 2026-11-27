@@ -52,6 +52,11 @@ export class GridSystem {
           if (distFromCenter <= 2) y = 2;
           else if (distFromCenter <= 4) y = 1;
           if (x >= 8) y = Math.max(y, 2);
+        } else if (seed >= 400) {
+          // Subterranean Dungeon Crypt / Chasm Battle Arena
+          const edgeDist = Math.min(x, this.width - 1 - x, z, this.height - 1 - z);
+          y = edgeDist >= 2 && (x + z) % 4 === 0 ? 1 : 0;
+          if (x >= 7 && z >= 2 && z <= 5) y = Math.max(y, 1);
         } else {
           // Obsidian Spire: stepped caldera ascending eastwards
           y = Math.min(3, Math.floor((x + (z % 3 === 0 ? 1 : 0)) / 3));
@@ -68,6 +73,11 @@ export class GridSystem {
           else if ((x === 3 || x === 7) && z >= 2 && z <= 8 && z % 2 === 0) terrain = 'water';
           else if (y === 1) terrain = 'high_ground';
           else if ((x + z) % 7 === 0) terrain = 'mud';
+        } else if (seed >= 400) {
+          terrain = y >= 1 ? 'high_ground' : 'stone';
+          if ((x === 4 && z === 5) || (x === 6 && z === 2)) {
+            terrain = 'hazard';
+          }
         } else {
           if (y >= 2) terrain = 'stone';
           else if (y === 1) terrain = 'high_ground';

@@ -4,6 +4,8 @@ import { CAMPAIGN_MISSIONS, WORLD_LORE } from '../game/GameConfig';
 import { soundManager } from '../utils/SoundManager';
 import { ArrowLeft, Play, Users, RotateCcw, Star } from 'lucide-react';
 import { ValenCrestSvg } from './brand/ValenIcons';
+import { WesnothIcon } from './brand/WesnothIcon';
+import { UI_WESNOTH_ICONS } from '../overworld/WesnothIconRegistry';
 
 interface Props {
   onUpdate: () => void;
@@ -42,8 +44,9 @@ export const CampaignSelect: React.FC<Props> = ({ onUpdate }) => {
           </div>
 
           <div className="flex items-center gap-4">
-            <span className="font-mono-num text-sm font-bold text-[#f3cf7a]">
-              Treasury: {game.saveData.gold} G
+            <span className="font-mono-num text-sm font-bold text-[#f3cf7a] inline-flex items-center gap-1.5 whitespace-nowrap">
+              <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={16} />
+              <span>Treasury: {game.saveData.gold} G</span>
             </span>
             <button
               type="button"
@@ -121,11 +124,19 @@ export const CampaignSelect: React.FC<Props> = ({ onUpdate }) => {
                   </p>
                 </div>
 
-                <div className="flex items-center gap-6 self-end md:self-center shrink-0">
-                  <div className="text-right text-xs text-[#8a99b3] font-mono-num space-y-1">
-                    <div className="text-[#f3cf7a] font-bold">+{mission.rewardGold} G</div>
-                    <div>
-                      +{mission.rewardExp} EXP · +{mission.rewardJp} JP
+                <div className="flex items-center justify-between sm:justify-end gap-4 sm:gap-6 w-full md:w-auto shrink-0">
+                  <div className="text-left sm:text-right text-xs text-[#8a99b3] font-mono-num space-y-1 whitespace-nowrap">
+                    <div className="text-[#f3cf7a] font-bold inline-flex items-center gap-1.5 sm:justify-end">
+                      <WesnothIcon assetKey={UI_WESNOTH_ICONS.gold} alt="Gold" size={14} />
+                      <span>+{mission.rewardGold} G</span>
+                    </div>
+                    <div className="flex items-center sm:justify-end gap-1.5">
+                      <span>+{mission.rewardExp} EXP</span>
+                      <span>·</span>
+                      <span className="inline-flex items-center gap-1 text-sky-300">
+                        <WesnothIcon assetKey={UI_WESNOTH_ICONS.jp} alt="JP" size={13} />
+                        <span>+{mission.rewardJp} JP</span>
+                      </span>
                     </div>
                   </div>
 

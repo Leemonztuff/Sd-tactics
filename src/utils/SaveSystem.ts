@@ -126,7 +126,27 @@ export function serializeSaveData(data: SaveData): string {
           clearedEncounters: [...data.overworld.clearedEncounters],
           collectedPois: [...(data.overworld.collectedPois ?? [])],
           activeWorldEvents: data.overworld.activeWorldEvents ? data.overworld.activeWorldEvents.map(e => ({ ...e })) : undefined,
-          worldEventCooldown: data.overworld.worldEventCooldown
+          worldEventCooldown: data.overworld.worldEventCooldown,
+          dungeon: data.overworld.dungeon
+            ? {
+                activeZone: data.overworld.dungeon.activeZone,
+                currentFloor: data.overworld.dungeon.currentFloor,
+                unlockedFloors: [...data.overworld.dungeon.unlockedFloors],
+                surfaceReturnX: data.overworld.dungeon.surfaceReturnX,
+                surfaceReturnY: data.overworld.dungeon.surfaceReturnY,
+                dungeonHeroX: data.overworld.dungeon.dungeonHeroX,
+                dungeonHeroY: data.overworld.dungeon.dungeonHeroY,
+                dungeonWoundPct: data.overworld.dungeon.dungeonWoundPct,
+                exploredByFloor: Object.fromEntries(
+                  Object.entries(data.overworld.dungeon.exploredByFloor).map(([k, v]) => [k, [...v]])
+                ),
+                resolvedTraps: [...data.overworld.dungeon.resolvedTraps],
+                collectedTreasures: [...data.overworld.dungeon.collectedTreasures],
+                rescuedAllies: [...data.overworld.dungeon.rescuedAllies],
+                clearedDungeonEnemies: [...data.overworld.dungeon.clearedDungeonEnemies],
+                visitedSanctuaries: [...data.overworld.dungeon.visitedSanctuaries]
+              }
+            : undefined
         }
       : undefined,
     qualityTier: data.qualityTier

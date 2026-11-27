@@ -33,7 +33,7 @@ export type JobId =
   | 'alquimista'
   | 'invocador';
 
-export type BattleBiome = 'lowlands' | 'ruins' | 'caldera';
+export type BattleBiome = 'lowlands' | 'ruins' | 'caldera' | 'dungeon';
 
 export type StatusType =
   | 'haste'
@@ -220,6 +220,23 @@ export interface MissionData {
   rewardGold: number;
 }
 
+export interface DungeonSaveState {
+  activeZone: 'surface' | 'dungeon';
+  currentFloor: 1 | 2 | 3 | 4;
+  unlockedFloors: number[];
+  surfaceReturnX: number;
+  surfaceReturnY: number;
+  dungeonHeroX: number;
+  dungeonHeroY: number;
+  dungeonWoundPct: number;
+  exploredByFloor: Record<string, string[]>;
+  resolvedTraps: string[];
+  collectedTreasures: string[];
+  rescuedAllies: string[];
+  clearedDungeonEnemies: string[];
+  visitedSanctuaries: string[];
+}
+
 export interface OverworldSaveState {
   heroX: number;
   heroY: number;
@@ -238,6 +255,7 @@ export interface OverworldSaveState {
     y: number;
   }[];
   worldEventCooldown?: number;
+  dungeon?: DungeonSaveState;
 }
 
 export interface SaveData {

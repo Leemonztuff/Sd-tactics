@@ -20,12 +20,12 @@ import { SkillVfxElement } from '../rendering/BattleVfxSystem';
 import { soundManager } from '../utils/SoundManager';
 import { calculateDamagePreview, DamagePreview, calculateMissionStars, MissionStarEvaluation, SynergyTag } from '../combat/CombatFormulas';
 import { loadSaveFromStorage, writeSaveToStorage, clearSaveStorage } from '../utils/SaveSystem';
-import { OverworldManager, OverworldEncounter, ActivePatrolState } from '../overworld/OverworldManager';
-import { ActiveWorldEventNode } from '../overworld/OverworldEvents';
-import { OverworldSceneManager } from '../overworld/OverworldSceneManager';
-import { WesnothHexTile, HexCoord } from '../overworld/WesnothMapSystem';
+import { OverworldManager, OverworldEncounter, TileInspectInfo } from '../overworld/OverworldManager';
+import { OverworldSceneManager, OverworldSceneBuildOptions } from '../overworld/OverworldSceneManager';
+import { HexCoord } from '../overworld/WesnothMapSystem';
 import { WesnothMovetypeId } from '../overworld/WesnothTerrain';
-import { OverworldPoiSpec, OverworldVillageSpec, buildEncounterMission } from '../overworld/WesnothOverworldMap';
+import { buildEncounterMission } from '../overworld/WesnothOverworldMap';
+import { OVERWORLD_RUINS, buildDungeonEncounterMission } from '../overworld/WesnothDungeonMaps';
 import { QUALITY_PRESETS, QualityTier, probeClientDeviceTier } from '../rendering/BrawlStyleSystem';
 
 export type GameScreen = 'menu' | 'overworld' | 'campaign_select' | 'roster' | 'battle' | 'victory' | 'defeat';
@@ -105,16 +105,7 @@ export class Game {
   // Overworld state (Wesnoth map & movement)
   public overworldManager: OverworldManager | null = null;
   public overworldScene: OverworldSceneManager | null = null;
-  public hoveredHexInfo: {
-    tile: WesnothHexTile;
-    regionName: string;
-    moveCost: number;
-    defensePct: number;
-    patrol: ActivePatrolState | null;
-    village: OverworldVillageSpec | null;
-    poi: OverworldPoiSpec | null;
-    worldEventNode: ActiveWorldEventNode | null;
-  } | null = null;
+  public hoveredHexInfo: TileInspectInfo | null = null;
   public hoveredHexPath: { path: HexCoord[]; cost: number; withinMp: boolean } | null = null;
   public overworldMoving = false;
   public activeEncounterPatrolId: string | null = null;
@@ -184,16 +175,35 @@ export class Game {
 
   public saveGame() {
     if (this.overworldManager) {
+      const ow = this.overworldManager;
       this.saveData.overworld = {
-        heroX: this.overworldManager.heroX,
-        heroY: this.overworldManager.heroY,
-        day: this.overworldManager.day,
-        movetype: this.overworldManager.movetype,
-        visitedVillages: Array.from(this.overworldManager.visitedVillages),
-        clearedEncounters: Array.from(this.overworldManager.clearedEncounters),
-        collectedPois: Array.from(this.overworldManager.collectedPois),
-        activeWorldEvents: this.overworldManager.activeWorldEvents.map(e => ({ ...e })),
-        worldEventCooldown: this.overworldManager.worldEventCooldown
+        heroX: ow.activeZone === 'surface' ? ow.heroX : ow.surfaceReturnX,
+        heroY: ow.activeZone === 'surface' ? ow.heroY : ow.surfaceReturnY,
+        day: ow.day,
+        movetype: ow.movetype,
+        visitedVillages: Array.from(ow.visitedVillages),
+        clearedEncounters: Array.from(ow.clearedEncounters),
+        collectedPois: Array.from(ow.collectedPois),
+        activeWorldEvents: ow.activeWorldEvents.map(e => ({ ...e })),
+        worldEventCooldown: ow.worldEventCooldown,
+        dungeon: {
+          activeZone: ow.activeZone,
+          currentFloor: ow.currentDungeonFloor,
+          unlockedFloors: Array.from(ow.unlockedDungeonFloors),
+          surfaceReturnX: ow.surfaceReturnX,
+          surfaceReturnY: ow.surfaceReturnY,
+          dungeonHeroX: ow.heroX,
+          dungeonHeroY: ow.heroY,
+          dungeonWoundPct: ow.dungeonWoundPct,
+          exploredByFloor: Object.fromEntries(
+            Array.from(ow.exploredByFloor.entries()).map(([f, set]) => [String(f), Array.from(set)])
+          ),
+          resolvedTraps: Array.from(ow.resolvedTraps),
+          collectedTreasures: Array.from(ow.collectedDungeonTreasures),
+          rescuedAllies: Array.from(ow.rescuedDungeonAllies),
+          clearedDungeonEnemies: Array.from(ow.clearedDungeonEnemies),
+          visitedSanctuaries: Array.from(ow.visitedSanctuaries)
+        }
       };
     }
     writeSaveToStorage(this.saveData);
@@ -225,6 +235,73 @@ export class Game {
     this.notify();
   }
 
+  private buildOverworldSceneOptions(mgr: OverworldManager): OverworldSceneBuildOptions {
+    if (mgr.activeZone === 'dungeon') {
+      return {
+        isDungeon: true,
+        floorSpec: mgr.getCurrentFloorSpec(),
+        visibility: {
+          isDungeon: true,
+          explored: mgr.getCurrentExploredSet(),
+          visible: mgr.visibleDungeonHexes
+        },
+        detectedTraps: mgr.getDetectedTraps(),
+        treasures: mgr.getActiveDungeonTreasures(),
+        allies: mgr.getActiveDungeonAllies()
+      };
+    }
+    return {
+      isDungeon: false,
+      ruins: OVERWORLD_RUINS
+    };
+  }
+
+  private syncDungeonSceneOverlays() {
+    const mgr = this.overworldManager;
+    if (!mgr || !this.overworldScene || mgr.activeZone !== 'dungeon') return;
+    this.overworldScene.syncDungeonVisuals(
+      mgr.map,
+      {
+        isDungeon: true,
+        explored: mgr.getCurrentExploredSet(),
+        visible: mgr.visibleDungeonHexes
+      },
+      mgr.getDetectedTraps(),
+      mgr.getActiveDungeonTreasures(),
+      mgr.getActiveDungeonAllies()
+    );
+  }
+
+  private rebuildOverworldSceneForZone() {
+    const mgr = this.overworldManager;
+    const scene = this.overworldScene;
+    if (!mgr || !scene) return;
+
+    const opts = this.buildOverworldSceneOptions(mgr);
+    scene.buildOverworldScene(mgr.map, opts);
+    scene.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+    if (mgr.activeZone === 'surface') {
+      scene.syncPois(mgr.getActivePois(), mgr.map);
+      scene.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+      scene.syncRuins(OVERWORLD_RUINS, mgr.map);
+    } else if (opts.visibility) {
+      scene.syncDungeonVisuals(
+        mgr.map,
+        opts.visibility,
+        mgr.getDetectedTraps(),
+        mgr.getActiveDungeonTreasures(),
+        mgr.getActiveDungeonAllies()
+      );
+    }
+    scene.snapCameraToHero(mgr.heroX, mgr.heroY, mgr.map);
+    scene.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    scene.setHoveredHex(mgr.heroX, mgr.heroY, mgr.map);
+    scene.renderNow();
+
+    this.hoveredHexPath = null;
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+  }
+
   public initOverworldScene(container: HTMLElement) {
     if (!this.overworldManager) {
       this.overworldManager = new OverworldManager(this.saveData.overworld);
@@ -234,7 +311,6 @@ export class Game {
       this.overworldScene = null;
     }
 
-    const mgr = this.overworldManager;
     const preset = QUALITY_PRESETS[this.qualityTier];
     const scene = new OverworldSceneManager(container, preset);
     if (scene.isSoftwareGl && !this.saveData.qualityTier) {
@@ -242,19 +318,11 @@ export class Game {
       scene.applyQualityPreset(QUALITY_PRESETS.eco);
     }
     this.overworldScene = scene;
-    scene.buildOverworldScene(mgr.map);
-    scene.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
-    scene.syncPois(mgr.getActivePois(), mgr.map);
-    scene.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
-    scene.snapCameraToHero(mgr.heroX, mgr.heroY, mgr.map);
-    scene.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
-    scene.setHoveredHex(mgr.heroX, mgr.heroY, mgr.map);
-    scene.renderNow();
+    this.rebuildOverworldSceneForZone();
 
     scene.onHexHover = (x, y) => this.handleOverworldHexHover(x, y);
     scene.onHexClick = (x, y) => this.handleOverworldHexClick(x, y);
 
-    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
     this.notify();
   }
 
@@ -271,9 +339,7 @@ export class Game {
       !this.overworldManager ||
       this.isPaused ||
       this.overworldMoving ||
-      this.overworldManager.pendingEncounter ||
-      this.overworldManager.pendingPoi ||
-      this.overworldManager.pendingWorldEvent
+      this.overworldManager.hasAnyPendingPrompt()
     ) {
       return;
     }
@@ -295,9 +361,7 @@ export class Game {
       !this.overworldManager ||
       this.isPaused ||
       this.overworldMoving ||
-      this.overworldManager.pendingEncounter ||
-      this.overworldManager.pendingPoi ||
-      this.overworldManager.pendingWorldEvent
+      this.overworldManager.hasAnyPendingPrompt()
     ) {
       return;
     }
@@ -319,9 +383,7 @@ export class Game {
       this.state !== 'overworld' ||
       this.isPaused ||
       this.overworldMoving ||
-      this.overworldManager.pendingEncounter ||
-      this.overworldManager.pendingPoi ||
-      this.overworldManager.pendingWorldEvent
+      this.overworldManager.hasAnyPendingPrompt()
     ) {
       return;
     }
@@ -356,13 +418,24 @@ export class Game {
       if (idx >= path.length) {
         this.overworldMoving = false;
         this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
-        this.overworldScene?.syncPois(mgr.getActivePois(), mgr.map);
-        this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+        if (mgr.activeZone === 'surface') {
+          this.overworldScene?.syncPois(mgr.getActivePois(), mgr.map);
+          this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+        } else {
+          this.syncDungeonSceneOverlays();
+        }
         this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
         this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
-        if (encounter) {
+        if (encounter || mgr.pendingTrap) {
           soundManager.playSlash();
-        } else if (mgr.pendingPoi || mgr.pendingWorldEvent) {
+        } else if (
+          mgr.pendingPoi ||
+          mgr.pendingWorldEvent ||
+          mgr.pendingRuin ||
+          mgr.pendingDungeonTreasure ||
+          mgr.pendingDungeonAlly ||
+          mgr.pendingStairs
+        ) {
           soundManager.playSpell();
         }
         this.saveGame();
@@ -511,6 +584,9 @@ export class Game {
     this.overworldManager.setMovetype(mt);
     const mgr = this.overworldManager;
     this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+    if (mgr.activeZone === 'dungeon') {
+      this.syncDungeonSceneOverlays();
+    }
     this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
     this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
     this.saveGame();
@@ -521,9 +597,7 @@ export class Game {
     if (
       !this.overworldManager ||
       this.overworldMoving ||
-      this.overworldManager.pendingEncounter ||
-      this.overworldManager.pendingPoi ||
-      this.overworldManager.pendingWorldEvent
+      this.overworldManager.hasAnyPendingPrompt()
     ) {
       return;
     }
@@ -531,9 +605,158 @@ export class Game {
     const { encounter } = this.overworldManager.endDay();
     const mgr = this.overworldManager;
     this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
-    this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+    if (mgr.activeZone === 'surface') {
+      this.overworldScene?.syncWorldEvents(mgr.activeWorldEvents, mgr.map);
+    } else {
+      this.syncDungeonSceneOverlays();
+    }
     this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
     if (encounter) soundManager.playSlash();
+    this.saveGame();
+    this.notify();
+  }
+
+  public enterDungeonFromRuin(floor: 1 | 2 | 3 | 4) {
+    const mgr = this.overworldManager;
+    if (!mgr || !mgr.unlockedDungeonFloors.has(floor)) return;
+    soundManager.playSpell();
+    mgr.enterDungeon(floor, 'up');
+    this.rebuildOverworldSceneForZone();
+    this.saveGame();
+    this.notify();
+  }
+
+  public dismissPendingRuin() {
+    if (!this.overworldManager?.pendingRuin) return;
+    soundManager.playClick();
+    this.overworldManager.pendingRuin = null;
+    this.hoveredHexInfo = this.overworldManager.getTileInspectInfo(
+      this.overworldManager.heroX,
+      this.overworldManager.heroY
+    );
+    this.notify();
+  }
+
+  public dismissPendingTrap() {
+    const mgr = this.overworldManager;
+    if (!mgr?.pendingTrap) return;
+    soundManager.playClick();
+    mgr.pendingTrap = null;
+    this.syncDungeonSceneOverlays();
+    this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+    this.saveGame();
+    this.notify();
+  }
+
+  public disarmAdjacentTrap(trapId: string): boolean {
+    const mgr = this.overworldManager;
+    if (!mgr || this.overworldMoving) return false;
+    const trap = mgr.disarmTrap(trapId);
+    if (!trap) return false;
+
+    soundManager.playClick();
+    this.saveData.gold += trap.disarmGold;
+    const em = new EntityManager();
+    for (const hero of this.saveData.roster) {
+      em.awardExperience(hero, 0, trap.disarmJp);
+    }
+    this.syncDungeonSceneOverlays();
+    this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+    this.saveGame();
+    this.notify();
+    return true;
+  }
+
+  public resolvePendingDungeonTreasure() {
+    const mgr = this.overworldManager;
+    const tres = mgr?.pendingDungeonTreasure;
+    if (!mgr || !tres) return;
+    soundManager.playClick();
+
+    this.saveData.gold += tres.rewardGold;
+    if (tres.rewardItem) {
+      const existing = this.saveData.inventory.find(i => i.itemId === tres.rewardItem!.itemId);
+      if (existing) existing.count += tres.rewardItem.count;
+      else this.saveData.inventory.push({ itemId: tres.rewardItem.itemId, count: tres.rewardItem.count });
+    }
+    const em = new EntityManager();
+    if (tres.rewardJpAll > 0) {
+      for (const hero of this.saveData.roster) {
+        em.awardExperience(hero, 0, tres.rewardJpAll);
+      }
+    }
+
+    mgr.pendingDungeonTreasure = null;
+    this.syncDungeonSceneOverlays();
+    this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+    this.saveGame();
+    this.notify();
+  }
+
+  public resolvePendingDungeonAlly() {
+    const mgr = this.overworldManager;
+    const ally = mgr?.pendingDungeonAlly;
+    if (!mgr || !ally) return;
+    soundManager.playClick();
+
+    const em = new EntityManager();
+    const r = ally.recruit;
+    if (!this.saveData.roster.some(h => h.id === r.heroId)) {
+      const newHero = em.createEntity(r.heroId, r.name, 'player', r.jobId, r.level, 0, 0, 0);
+      if (r.weaponId) em.equipItem(newHero, r.weaponId, 'weapon');
+      if (r.armorId) em.equipItem(newHero, r.armorId, 'armor');
+      if (r.accessoryId) em.equipItem(newHero, r.accessoryId, 'accessory');
+      this.saveData.roster.push(newHero);
+      const squad = this.getActiveSquadIds();
+      if (squad.length < 4 && !squad.includes(newHero.id)) {
+        this.saveData.activeSquadIds = [...squad, newHero.id];
+      }
+      mgr.log(`${newHero.name} joined the Order of the Dawn!`);
+    }
+
+    mgr.pendingDungeonAlly = null;
+    this.syncDungeonSceneOverlays();
+    this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
+    this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
+    this.saveGame();
+    this.notify();
+  }
+
+  public confirmStairsTransition() {
+    const mgr = this.overworldManager;
+    const stairs = mgr?.pendingStairs;
+    if (!mgr || !stairs || stairs.blockedByWardenName) return;
+    soundManager.playSpell();
+    if (stairs.direction === 'down') {
+      mgr.descendToNextFloor();
+    } else {
+      mgr.ascendDungeonFloor();
+    }
+    this.rebuildOverworldSceneForZone();
+    this.saveGame();
+    this.notify();
+  }
+
+  public dismissPendingStairs() {
+    if (!this.overworldManager?.pendingStairs) return;
+    soundManager.playClick();
+    this.overworldManager.pendingStairs = null;
+    this.hoveredHexInfo = this.overworldManager.getTileInspectInfo(
+      this.overworldManager.heroX,
+      this.overworldManager.heroY
+    );
+    this.notify();
+  }
+
+  public exitDungeonToSurface() {
+    const mgr = this.overworldManager;
+    if (!mgr || mgr.activeZone !== 'dungeon' || this.overworldMoving || mgr.hasAnyPendingPrompt()) return;
+    soundManager.playSpell();
+    mgr.exitDungeonToSurface();
+    this.rebuildOverworldSceneForZone();
     this.saveGame();
     this.notify();
   }
@@ -541,7 +764,16 @@ export class Game {
   public engagePendingEncounter() {
     if (!this.overworldManager?.pendingEncounter) return;
     const enc = this.overworldManager.pendingEncounter;
-    const mission = buildEncounterMission(enc.patrol, enc.tile.terrain, enc.tile.x, enc.tile.y);
+    const mission = enc.dungeonFloor
+      ? buildDungeonEncounterMission(
+          enc.patrol,
+          this.overworldManager.getCurrentFloorSpec(),
+          enc.tile.terrain,
+          enc.tile.x,
+          enc.tile.y,
+          this.overworldManager.dungeonWoundPct
+        )
+      : buildEncounterMission(enc.patrol, enc.tile.terrain, enc.tile.x, enc.tile.y);
     this.overworldManager.pendingEncounter = null;
     this.activeEncounterPatrolId = enc.patrol.id;
     this.returnToOverworldAfterBattle = true;
@@ -554,6 +786,9 @@ export class Game {
     this.overworldManager.dismissEncounter();
     const mgr = this.overworldManager;
     this.overworldScene?.syncHeroAndPatrols(mgr.heroX, mgr.heroY, mgr.facingEast, mgr.movetype, mgr.map, mgr.patrols);
+    if (mgr.activeZone === 'dungeon') {
+      this.syncDungeonSceneOverlays();
+    }
     this.overworldScene?.showReachableHexes(mgr.reachable, mgr.map, mgr.patrols);
     this.hoveredHexInfo = mgr.getTileInspectInfo(mgr.heroX, mgr.heroY);
     this.saveGame();
@@ -702,11 +937,19 @@ export class Game {
     this.entityManager = new EntityManager();
 
     // Spawn active deployed squad (up to 4 heroes) at mission spawn points
+    const dungeonWoundPct =
+      mission.elevationSeed >= 400 && this.overworldManager?.activeZone === 'dungeon'
+        ? this.overworldManager.dungeonWoundPct
+        : 0;
     const squad = this.getDeployedSquad();
     squad.forEach((hero, index) => {
       const spawn = mission.playerSpawns[index] ?? { x: 1 + index, z: 2 };
       const tile = this.grid!.getTile(spawn.x, spawn.z);
       const ent = this.entityManager!.addExistingEntity(hero);
+      if (dungeonWoundPct > 0) {
+        const woundScale = Math.max(0.45, 1 - dungeonWoundPct / 100);
+        ent.stats.hp = Math.max(1, Math.round(ent.stats.maxHp * woundScale));
+      }
       ent.x = spawn.x;
       ent.z = spawn.z;
       ent.y = tile ? tile.y : 0;
@@ -736,7 +979,11 @@ export class Game {
     this.turnManager = new TurnManager(this.entityManager.getAllEntities(), true);
     this.state = 'battle';
     this.phase = 'ct_tick';
-    this.combatLog = [`Mission Begun: ${mission.title} — ${mission.victoryCondition}`];
+    this.combatLog = [
+      dungeonWoundPct > 0
+        ? `Mission Begun: ${mission.title} (${dungeonWoundPct}% trap fatigue applied)`
+        : `Mission Begun: ${mission.title} — ${mission.victoryCondition}`
+    ];
 
     this.advanceTurn();
     this.notify();

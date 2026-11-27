@@ -613,7 +613,7 @@ export const INITIAL_OVERWORLD_PATROLS: OverworldPatrolSpec[] = [
  * Generates a tactical MissionData battle arena matching the Wesnoth hex where the encounter occurred!
  */
 export function buildEncounterMission(
-  patrol: OverworldPatrolSpec,
+  patrol: Omit<OverworldPatrolSpec, 'spriteAsset'> & { spriteAsset: string },
   terrain: WesnothTerrainInfo,
   hexX: number,
   hexY: number
