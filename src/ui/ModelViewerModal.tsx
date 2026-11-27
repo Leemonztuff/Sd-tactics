@@ -264,12 +264,20 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
       return;
     }
 
+    if (weightPaintingRef.current) {
+      weightPaintingRef.current = false;
+      onWeightStrokeEndRef.current();
+    }
     if (rigRef.current) {
       scene.remove(rigRef.current.group);
       rigRef.current.dispose();
       rigRef.current = null;
     }
 
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
+    setWeightPaintEnabled(false);
+    if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
     rigRef.current = rig;
     const canShowOriginalTex = rig.metadata.hasNativeTextures && rig.metadata.hasNativeUvs;
     const initialMode: CustomMaterialMode =
@@ -571,6 +579,7 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
       onLandmarkPlacedRef.current({ x: local.x, y: local.y, z: local.z });
       landmarkPickingRef.current = false;
       setIsPlacingLandmark(false);
+      rig.exitBindPoseMode();
     };
 
     const domEl = renderer.domElement;
@@ -800,20 +809,31 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
     if (isPlacingLandmark) {
       landmarkPickingRef.current = false;
       setIsPlacingLandmark(false);
+      rigRef.current?.exitBindPoseMode();
       return;
+    }
+    if (weightPaintEnabled) {
+      setWeightPaintEnabled(false);
+      if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
     }
     selectedLandmarkRef.current = selectedLandmark;
     landmarkPickingRef.current = true;
     setIsPlacingLandmark(true);
+    rigRef.current?.enterBindPoseMode();
+    renderOnceRef.current?.();
   };
 
   const handleApplyLandmarks = async () => {
     landmarkPickingRef.current = false;
     setIsPlacingLandmark(false);
+    rigRef.current?.exitBindPoseMode();
     if (await rebuildWithConfig(config, true)) setWizardDirty(false);
   };
 
   const handleResetLandmarks = () => {
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
+    if (!weightPaintEnabled) rigRef.current?.exitBindPoseMode();
     const nextConfig = normalizeCustomModelConfig({ ...config, manualLandmarks: {} });
     setConfig(nextConfig);
     setWizardDirty(true);
@@ -829,14 +849,18 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
   const handleWeightPaintToggle = () => {
     const enabled = !weightPaintEnabled;
-    setWeightPaintEnabled(enabled);
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
     if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
     if (enabled) {
-      landmarkPickingRef.current = false;
-      setIsPlacingLandmark(false);
       if (activeAnim !== 'idle') handlePlayAnim('idle');
+      setWeightPaintEnabled(true);
       setShowWeightPreview(true);
       rigRef.current?.setWeightPreview(true);
+      rigRef.current?.enterBindPoseMode();
+    } else {
+      setWeightPaintEnabled(false);
+      rigRef.current?.exitBindPoseMode();
     }
     renderOnceRef.current?.();
   };
@@ -1161,6 +1185,11 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
   const handlePlayAnim = (anim: 'idle' | 'attack' | 'walk' | 'hit') => {
     soundManager.playClick();
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
+    setWeightPaintEnabled(false);
+    if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
+    rigRef.current?.exitBindPoseMode();
     setActiveAnim(anim);
     if (!rigRef.current) return;
     if (anim === 'idle') {
@@ -1180,6 +1209,11 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
   const handlePlayCustomClip = (clipName: string) => {
     soundManager.playClick();
+    landmarkPickingRef.current = false;
+    setIsPlacingLandmark(false);
+    setWeightPaintEnabled(false);
+    if (weightBrushCursorRef.current) weightBrushCursorRef.current.visible = false;
+    rigRef.current?.exitBindPoseMode();
     setActiveAnim(`clip:${clipName}`);
     rigRef.current?.playClipByName(clipName, 0.15);
   };
@@ -1771,6 +1805,11 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
                             Selecciona un punto y haz clic sobre el modelo. El punto se guarda en coordenadas normalizadas;
                             el lado derecho se refleja automáticamente.
                           </p>
+                          {isPlacingLandmark && (
+                            <p role="status" className="text-[10px] text-amber-200">
+                              Pose de reposo activa para colocar el punto sin desfase de animación.
+                            </p>
+                          )}
 
                           {config.manualLandmarks[selectedLandmark] && (
                             <div className="grid grid-cols-3 gap-1.5">
@@ -1863,6 +1902,9 @@ export const ModelViewerModal: React.FC<Props> = ({ isOpen, onClose, onEnterBatt
 
                       {weightPaintEnabled && (
                         <div className="space-y-2">
+                          <p role="status" className="text-[10px] text-amber-200">
+                            Pose de reposo activa mientras editas los pesos.
+                          </p>
                           <label className="block space-y-1">
                             <span className="text-[10px] text-slate-300">Hueso a editar</span>
                             <select

@@ -531,6 +531,11 @@ export class CustomRigController {
   private weightUndoStack: WeightPaintUndoEntry[][] = [];
   private attackCallback: (() => void) | null = null;
   private hitCallback: (() => void) | null = null;
+  private bindPoseActive = false;
+  private bindPoseAction: THREE.AnimationAction | null = null;
+  private bindPosePreviousActionName = 'idle';
+  private bindPosePreviousClipName = 'idle';
+  private bindPoseActionTime = 0;
 
   public setWeaponsVisible(visible: boolean) {
     if (this.weaponGroup) this.weaponGroup.visible = visible;
@@ -654,6 +659,7 @@ export class CustomRigController {
     fadeDuration: number,
     clipLabel?: string
   ) {
+    if (this.bindPoseActive) this.exitBindPoseMode();
     const prev =
       this.actions[this.currentActionName] ??
       this.clipActionsByName[this.currentClipName];
@@ -698,6 +704,47 @@ export class CustomRigController {
     if (!action) return;
     action.setLoop(THREE.LoopRepeat, Infinity);
     this.switchToAction(`custom:${name}`, action, fadeDuration, name);
+  }
+
+  /**
+   * Freezes the rig in its bind/rest pose. Landmark placement and weight painting
+   * raycast against the static bind geometry, so showing that same pose avoids
+   * clicking on an animated surface that no longer matches the mesh being edited.
+   */
+  public enterBindPoseMode() {
+    if (this.bindPoseActive) return;
+    const action =
+      this.actions[this.currentActionName] ??
+      this.clipActionsByName[this.currentClipName] ??
+      this.actions.idle;
+    this.bindPosePreviousActionName = this.currentActionName;
+    this.bindPosePreviousClipName = this.currentClipName;
+    this.bindPoseAction = action;
+    this.bindPoseActionTime = action.time;
+    this.bindPoseActive = true;
+    this.mixer.stopAllAction();
+    for (const skeleton of this.skeletonsToDispose) skeleton.pose();
+    this.modelRoot.updateMatrixWorld(true);
+  }
+
+  public exitBindPoseMode() {
+    if (!this.bindPoseActive) return;
+    this.bindPoseActive = false;
+    const action = this.bindPoseAction ?? this.actions.idle;
+    this.bindPoseAction = null;
+    action.reset();
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.play();
+    action.time = this.bindPoseActionTime;
+    this.currentActionName = this.bindPosePreviousActionName;
+    this.currentClipName = this.bindPosePreviousClipName;
+    this.mixer.update(0);
+    this.modelRoot.updateMatrixWorld(true);
+  }
+
+  public get isBindPoseActive(): boolean {
+    return this.bindPoseActive;
   }
 
   public setSpeed(speed: number) {
@@ -1143,7 +1190,9 @@ export class CustomRigController {
   }
 
   public update(dt: number) {
-    this.mixer.update(dt);
+    if (!this.bindPoseActive) {
+      this.mixer.update(dt);
+    }
     if (this.skeletonHelper.visible) {
       this.skeletonHelper.updateMatrixWorld(true);
     }
@@ -1296,11 +1345,21 @@ export function matchHumanoidBones(bones: THREE.Bone[]): Record<string, THREE.Bo
     findByPatterns([/neck/]) ??
     map.chest;
 
-  // Left arm chain
-  const isLeft = (n: string) =>
-    /(^|[^a-z])(left|l)([^a-z]|$)|\.l$|_l$|^left|l_/i.test(n);
-  const isRight = (n: string) =>
-    /(^|[^a-z])(right|r)([^a-z]|$)|\.r$|_r$|^right|r_/i.test(n);
+  // Left/right chain detection. Mixamo uses "mixamorig:LeftArm" (no separator
+  // after the side word), while Blender/Rigify use "upper_arm.L" / "Bip01 L
+  // UpperArm". Match side words at a token boundary OR as a prefix/suffix, and
+  // single-letter sides only as standalone tokens so "lowerarm"/"leg" never
+  // get misclassified.
+  const hasSideWord = (raw: string, word: 'left' | 'right'): boolean =>
+    new RegExp(`(^|[^a-z])${word}`).test(raw) || new RegExp(`${word}$`).test(raw);
+  const isLeft = (n: string) => {
+    const raw = n.toLowerCase();
+    return hasSideWord(raw, 'left') || /(^|[^a-z])l([^a-z]|$)/.test(raw);
+  };
+  const isRight = (n: string) => {
+    const raw = n.toLowerCase();
+    return hasSideWord(raw, 'right') || /(^|[^a-z])r([^a-z]|$)/.test(raw);
+  };
 
   const assign = (slot: string, bone: THREE.Bone | undefined) => {
     if (bone) map[slot] = bone;
@@ -2045,8 +2104,19 @@ export function applyAnatomicalSkinWeights(
 
     const accum = new Float32Array(18);
 
-    // 1. Head isolation above neckY (prevents ears/hair/halos from attaching to arms)
-    const wHead = smoothstep(layout.neckY - 0.09, layout.neckY - 0.01, y);
+    // 1. Head isolation above neckY (prevents ears/hair/halos from attaching to arms).
+    // Keep the head blend on the skull/neck instead of starting far below the neck:
+    // on chibi models the old -0.09 start captured wide shoulder pauldrons/sleeves,
+    // freezing them in T-pose while the real arms lowered. Lateral gating keeps the
+    // head from claiming shoulder-width geometry at the neck line.
+    const headBlend = smoothstep(layout.neckY - 0.045, layout.neckY + 0.02, y);
+    const headLateral = 1 - smoothstep(
+      layout.torsoRadiusX * 0.95,
+      layout.torsoRadiusX * 1.35,
+      ax
+    );
+    const headCrown = smoothstep(layout.neckY + 0.005, layout.neckY + 0.035, y);
+    const wHead = headBlend * lerp(headLateral, 1, headCrown);
 
     // 1b. Rear appendage factor (isolates wings, cloaks, long back hair to torso/chest instead of arms)
     let rearFade = 1.0;
@@ -2061,11 +2131,11 @@ export function applyAnatomicalSkinWeights(
 
     // 2. Arm domain mask (covers sleeves up to neckY - 0.05, keeping arms completely away from head/ears)
     let armMask = 0;
-    if (y >= layout.armMinY - 0.08 && y <= layout.neckY - 0.05) {
+    if (y >= layout.armMinY - 0.08 && y <= layout.neckY + 0.005) {
       const lateralMask = smoothstep(armStartX - 0.015, armStartX + 0.04, ax);
       const lowFade = smoothstep(layout.armMinY - 0.08, layout.armMinY - 0.01, y);
       const torsoGuardY =
-        y >= layout.pelvisY - 0.02 && y <= layout.neckY - 0.02
+        y >= layout.pelvisY - 0.02 && y <= layout.neckY + 0.005
           ? 1
           : 0;
       const torsoGuardX = smoothstep(

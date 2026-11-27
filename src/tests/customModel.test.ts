@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import type { HumanoidSkeletonLayout } from '../rendering/CustomModelRig';
 import {
   analyzeHumanoidGeometry,
   applyManualRigLandmarks,
@@ -12,6 +13,7 @@ import {
   createRigAnimationClips,
   detectModelFormat,
   importRiggedModelFromBuffer,
+  matchHumanoidBones,
   normalizeCustomModelConfig,
   normalizeModelGeometry
 } from '../rendering/CustomModelRig';
@@ -278,6 +280,75 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     assert.equal(bonesMap.rightFoot.parent, bonesMap.rightLeg);
   });
 
+  it('should match Mixamo prefix-side bones and Rigify .L/.R bones for hands and knees', () => {
+    const mixamoBones = [
+      'mixamorig:Hips',
+      'mixamorig:Spine',
+      'mixamorig:Spine1',
+      'mixamorig:Spine2',
+      'mixamorig:Neck',
+      'mixamorig:Head',
+      'mixamorig:LeftShoulder',
+      'mixamorig:LeftArm',
+      'mixamorig:LeftForeArm',
+      'mixamorig:LeftHand',
+      'mixamorig:RightShoulder',
+      'mixamorig:RightArm',
+      'mixamorig:RightForeArm',
+      'mixamorig:RightHand',
+      'mixamorig:LeftUpLeg',
+      'mixamorig:LeftLeg',
+      'mixamorig:LeftFoot',
+      'mixamorig:RightUpLeg',
+      'mixamorig:RightLeg',
+      'mixamorig:RightFoot'
+    ].map(name => {
+      const bone = new THREE.Bone();
+      bone.name = name;
+      return bone;
+    });
+
+    const mixamo = matchHumanoidBones(mixamoBones);
+    assert.equal(mixamo.leftHand?.name, 'mixamorig:LeftHand');
+    assert.equal(mixamo.rightHand?.name, 'mixamorig:RightHand');
+    assert.equal(mixamo.leftLeg?.name, 'mixamorig:LeftLeg');
+    assert.equal(mixamo.rightLeg?.name, 'mixamorig:RightLeg');
+    assert.equal(mixamo.leftHip?.name, 'mixamorig:LeftUpLeg');
+    assert.equal(mixamo.rightHip?.name, 'mixamorig:RightUpLeg');
+
+    const rigifyBones = [
+      'hips',
+      'spine',
+      'chest',
+      'neck',
+      'head',
+      'shoulder.L',
+      'upper_arm.L',
+      'forearm.L',
+      'hand.L',
+      'shoulder.R',
+      'upper_arm.R',
+      'forearm.R',
+      'hand.R',
+      'thigh.L',
+      'shin.L',
+      'foot.L',
+      'thigh.R',
+      'shin.R',
+      'foot.R'
+    ].map(name => {
+      const bone = new THREE.Bone();
+      bone.name = name;
+      return bone;
+    });
+
+    const rigify = matchHumanoidBones(rigifyBones);
+    assert.equal(rigify.leftHand?.name, 'hand.L');
+    assert.equal(rigify.rightHand?.name, 'hand.R');
+    assert.equal(rigify.leftLeg?.name, 'shin.L');
+    assert.equal(rigify.rightLeg?.name, 'shin.R');
+  });
+
   it('should apply normalized manual landmarks while keeping bilateral joints mirrored', () => {
     const detected = analyzeHumanoidGeometry(new THREE.BoxGeometry(0.2, 1, 0.2));
     const config = normalizeCustomModelConfig({
@@ -528,6 +599,16 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     controller.playClipByName('Victory_Dance', 0);
     controller.update(0.25);
     assert.equal(controller.currentClipName, 'Victory_Dance');
+    const dancingHips = controller.bones.pelvis.quaternion.clone();
+    controller.enterBindPoseMode();
+    assert.equal(controller.isBindPoseActive, true);
+    controller.exitBindPoseMode();
+    assert.equal(controller.currentActionName, 'custom:Victory_Dance');
+    assert.equal(controller.currentClipName, 'Victory_Dance');
+    assert.ok(
+      dancingHips.angleTo(controller.bones.pelvis.quaternion) < 1e-4,
+      'Bind-pose mode should restore the active custom clip and its playback time'
+    );
 
     controller.dispose();
   });
@@ -573,6 +654,50 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
     assert.ok(leftArm.quaternion.angleTo(restArmQuat) > 0.05);
     assert.ok(leftArm.quaternion.length() > 0.99);
 
+    controller.dispose();
+  });
+
+  it('should freeze the bind pose and resume the previous animation at its saved time', () => {
+    const { scene } = buildTestSkinnedCharacterScene();
+    const controller = createControllerFromGltf(
+      {
+        scene,
+        scenes: [scene],
+        animations: [],
+        cameras: [],
+        asset: { version: '2.0' },
+        parser: {},
+        userData: {}
+      } as unknown as GLTF,
+      { modelName: 'bind_pose_test.glb', outlinesEnabled: false }
+    );
+    const leftArm = controller.bones.leftArm;
+    assert.ok(leftArm);
+
+    controller.playAttack(undefined, 0);
+    controller.update(0.38);
+    const animatedArm = leftArm.quaternion.clone();
+    assert.ok(animatedArm.angleTo(new THREE.Quaternion()) > 0.05);
+
+    controller.enterBindPoseMode();
+    assert.equal(controller.isBindPoseActive, true);
+    assert.equal(controller.currentActionName, 'attack');
+    const bindArm = leftArm.quaternion.clone();
+    controller.update(0.3);
+    assert.ok(bindArm.angleTo(leftArm.quaternion) < 1e-5, 'Bind pose should stay frozen');
+
+    controller.exitBindPoseMode();
+    assert.equal(controller.isBindPoseActive, false);
+    assert.equal(controller.currentActionName, 'attack');
+    assert.ok(
+      animatedArm.angleTo(leftArm.quaternion) < 1e-4,
+      'Exit should resume the saved attack pose/time'
+    );
+
+    controller.enterBindPoseMode();
+    controller.playIdle(0);
+    assert.equal(controller.isBindPoseActive, false, 'Changing animation exits bind-pose mode');
+    assert.equal(controller.currentActionName, 'idle');
     controller.dispose();
   });
 
@@ -815,6 +940,86 @@ describe('Custom 3D Model Rig & Universal Importer Tests', () => {
       );
     }
     staticCtrl.dispose();
+  });
+
+  it('should bind shoulder-height pauldrons to the arm chain instead of the head', () => {
+    // Chibi proportions from model01.glb: wide pauldrons/sleeves sit at y~0.63-0.68,
+    // only a few centimetres below the neck. They must follow the shoulders/arms,
+    // not the head, or they stay frozen like wings when the arms lower.
+    const layout: HumanoidSkeletonLayout = {
+      pelvisY: 0.42,
+      pelvisZ: 0,
+      spineY: 0.53,
+      spineZ: 0.027,
+      chestY: 0.639,
+      chestZ: 0.054,
+      neckY: 0.702,
+      neckZ: 0.005,
+      headTopY: 0.96,
+      headZ: 0.005,
+      hipX: 0.08,
+      hipZ: 0,
+      kneeY: 0.21,
+      kneeZ: 0,
+      footY: 0.035,
+      footZ: 0,
+      torsoRadiusX: 0.095,
+      shoulderX: 0.059,
+      shoulderY: 0.664,
+      shoulderZ: 0.007,
+      elbowX: 0.229,
+      elbowY: 0.634,
+      elbowZ: 0.027,
+      armEndX: 0.415,
+      armEndY: 0.624,
+      armEndZ: 0.029,
+      armMinY: 0.52,
+      hasBackAppendages: false,
+      backAppendageZ: -0.03,
+      rearSign: -1,
+      armPose: 't-pose',
+      proportionClass: 'chibi',
+      hasFloatingHalo: false
+    };
+
+    const probe = new THREE.BufferGeometry();
+    probe.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(
+        [
+          0.15, 0.67, 0.03, // right pauldron top near the neck
+          -0.15, 0.67, 0.03, // left pauldron top near the neck
+          0.0, 0.78, 0.0, // head/face centre
+          0.0, 0.64, 0.0, // chest centre
+          0.0, 0.69, 0.0 // neck centre
+        ],
+        3
+      )
+    );
+    applyAnatomicalSkinWeights(probe, layout);
+    const idx = probe.attributes.skinIndex;
+    const wgt = probe.attributes.skinWeight;
+
+    assert.ok(
+      idx.getX(0) === 9 || idx.getX(0) === 10 || idx.getX(0) === 11,
+      `Right pauldron bound to bone ${idx.getX(0)} instead of the right arm chain`
+    );
+    assert.ok(wgt.getX(0) > 0.5, `Right pauldron weight ${wgt.getX(0)} too low`);
+
+    assert.ok(
+      idx.getX(1) === 6 || idx.getX(1) === 7 || idx.getX(1) === 8,
+      `Left pauldron bound to bone ${idx.getX(1)} instead of the left arm chain`
+    );
+    assert.ok(wgt.getX(1) > 0.5, `Left pauldron weight ${wgt.getX(1)} too low`);
+
+    assert.equal(idx.getX(2), 4, `Face vertex bound to bone ${idx.getX(2)} instead of head`);
+    assert.ok(wgt.getX(2) > 0.8);
+
+    assert.ok(
+      idx.getX(3) === 1 || idx.getX(3) === 2 || idx.getX(3) === 3,
+      `Chest vertex bound to bone ${idx.getX(3)} instead of the torso`
+    );
+    assert.ok(idx.getX(4) < 6, `Neck vertex leaked into the arm chain (bone ${idx.getX(4)})`);
   });
 
   it('should align skeleton bones along Z centroids and lower/swing T-pose arms in idle, walk, and attack', () => {
